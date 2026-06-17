@@ -1,0 +1,22 @@
+# MediaMTX relay config. The encoder pushes to rtmp://localhost:1935/live/show
+# (always reliable, on-box). MediaMTX forwards to the real upstream and
+# reconnects silently on upstream blips — the encoder never notices, so the
+# program stream "never drops" from upstream network issues.
+#
+# To relay on to an external RTMP server, uncomment runOnReady below and set
+# your upstream URL + key. Otherwise viewers can pull directly from this relay
+# (rtmp://<host>:1935/live/show or http://<host>:8888/live/show via HLS).
+
+logLevel: info
+rtmp: yes
+rtmpAddress: :1935
+hls: yes
+hlsAddress: :8888
+
+paths:
+  live/show:
+    # Forward the local feed to an upstream RTMP ingest. Restarts automatically.
+    # runOnReady: >
+    #   ffmpeg -re -i rtmp://localhost:1935/live/show
+    #   -c copy -f flv rtmp://UPSTREAM_HOST/app/STREAM_KEY
+    # runOnReadyRestart: yes

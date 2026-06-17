@@ -1,0 +1,37 @@
+{{define "track-list"}}
+<div id="track-list">
+    {{if .Tracks}}
+    <table class="data-table">
+        <thead>
+            <tr><th>Title</th><th>Artist</th><th>Source</th><th>Length</th><th></th></tr>
+        </thead>
+        <tbody>
+        {{range .Tracks}}
+            <tr>
+                <td>
+                    <form method="POST" action="/api/library/edit" class="inline-edit">
+                        <input type="hidden" name="id" value="{{.ID}}">
+                        <input name="title" value="{{.Title}}">
+                </td>
+                <td>
+                        <input name="artist" value="{{.Artist}}">
+                </td>
+                <td><span class="badge">{{.Source}}</span></td>
+                <td>{{fmtDuration .DurationSec}}</td>
+                <td class="row-actions">
+                        <button class="btn btn-sm btn-outline" type="submit">Save</button>
+                    </form>
+                    <form method="POST" action="/api/library/delete" onsubmit="return confirm('Delete this track?')">
+                        <input type="hidden" name="id" value="{{.ID}}">
+                        <button class="btn btn-sm btn-danger" type="submit">✕</button>
+                    </form>
+                </td>
+            </tr>
+        {{end}}
+        </tbody>
+    </table>
+    {{else}}
+    <p class="empty">No tracks yet. Import a YouTube URL or upload files above.</p>
+    {{end}}
+</div>
+{{end}}

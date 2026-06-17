@@ -1,0 +1,23 @@
+services:
+  playout:
+    build: .
+    ports:
+      - "${PORT:-8080}:8080"   # web UI
+      - "1935:1935"            # RTMP (relay ingest + pull)
+      - "8888:8888"            # HLS (pull/playback)
+    volumes:
+      - ./data:/app/data
+      - ./media:/app/media
+      - ./soundboard:/app/soundboard
+      - ./assets:/app/assets
+      - ./mediamtx.yml:/app/mediamtx.yml
+    environment:
+      - PORT=${PORT:-8080}
+      - SESSION_SECRET=${SESSION_SECRET:-change-me-in-production}
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
+      - RTMP_URL=${RTMP_URL:-rtmp://localhost:1935/live/show}
+      - THEME=${THEME:-teal}
+    env_file:
+      - .env
+    restart: unless-stopped

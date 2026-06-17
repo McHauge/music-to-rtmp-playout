@@ -27,6 +27,21 @@ go.work.sum
 # env file
 .env
 
+# Compiled binary
+/playout
+
+# Bundled external tools (downloaded via scripts/fetch-tools — large, not vcs'd)
+/bin/*
+!/bin/.gitkeep
+
+# Runtime data + user content (keep the dirs, ignore contents)
+/data/*
+/media/*
+/soundboard/*
+/assets/now.txt
+/assets/now.txt.tmp
+!**/.gitkeep
+
 # Editor/IDE
 # .idea/
 # .vscode/

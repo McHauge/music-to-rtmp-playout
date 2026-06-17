@@ -1,0 +1,141 @@
+{{define "page-flow"}}
+<!DOCTYPE html>
+<html lang="en" data-theme="{{.Theme}}">
+{{template "head" .}}
+<body>
+    {{template "orbs" .}}
+    <div class="wrapper">
+        {{template "navbar" .}}
+        <main class="page">
+            <h1 class="page-title">Flow Builder</h1>
+
+            <div class="grid-sidebar">
+                <!-- Shows list -->
+                <aside class="card glass">
+                    <h2>Shows</h2>
+                    <ul class="show-list">
+                        {{range .Extra.Playlists}}
+                        <li>
+                            <a href="/flow?id={{.ID}}"
+                               class="show-link {{if and $.Extra.Selected (eq .ID $.Extra.Selected.ID)}}active{{end}}">
+                                {{.Name}}
+                            </a>
+                        </li>
+                        {{end}}
+                    </ul>
+                    <form method="POST" action="/api/flow/create" class="new-show">
+                        <input name="name" placeholder="New show name" required>
+                        <button class="btn btn-primary btn-sm" type="submit">+ Create</button>
+                    </form>
+                </aside>
+
+                <!-- Builder -->
+                <section class="card glass">
+                {{if .Extra.Selected}}
+                    {{$pl := .Extra.Selected}}
+                    <div class="builder-header">
+                        <form method="POST" action="/api/flow/rename" class="rename-form">
+                            <input type="hidden" name="id" value="{{$pl.ID}}">
+                            <input name="name" value="{{$pl.Name}}">
+                            <button class="btn btn-sm btn-outline" type="submit">Rename</button>
+                        </form>
+                        <div class="builder-meta">
+                            <span class="muted">Est. runtime: <strong>{{fmtDuration .Extra.RuntimeSec}}</strong></span>
+                            <a class="btn btn-sm btn-primary" href="/stream?play={{$pl.ID}}">Go to Stream →</a>
+                            <form method="POST" action="/api/flow/delete" onsubmit="return confirm('Delete this show?')">
+                                <input type="hidden" name="id" value="{{$pl.ID}}">
+                                <button class="btn btn-sm btn-danger" type="submit">Delete show</button>
+                            </form>
+                        </div>
+                    </div>
+
+                    <!-- Flow items -->
+                    <ol class="flow-list">
+                        {{range $i, $it := .Extra.Items}}
+                        <li class="flow-item flow-{{$it.Type}}">
+                            <span class="flow-pos">{{add $i 1}}</span>
+                            <span class="flow-desc">
+                                {{if eq $it.Type "song"}}
+                                    {{if $it.Track}}🎵 {{if $it.Track.Artist}}{{$it.Track.Artist}} — {{end}}{{$it.Track.Title}}{{else}}🎵 (missing track){{end}}
+                                {{else if eq $it.Type "break"}}
+                                    ⏲ Break — {{$it.BreakSec}}s
+                                {{else}}
+                                    ⏸ {{if $it.Label}}Hold: {{$it.Label}}{{else}}Manual hold{{end}}
+                                {{end}}
+                            </span>
+                            <span class="flow-flags">
+                                {{if ne $it.Type "gate"}}
+                                <form method="POST" action="/api/flow/item/autonext" class="inline">
+                                    <input type="hidden" name="playlist_id" value="{{$pl.ID}}">
+                                    <input type="hidden" name="id" value="{{$it.ID}}">
+                                    <input type="hidden" name="auto_next" value="{{if $it.AutoNext}}off{{else}}on{{end}}">
+                                    <button class="chip {{if $it.AutoNext}}chip-on{{end}}" type="submit"
+                                            title="Toggle auto-continue">
+                                        {{if $it.AutoNext}}auto-next{{else}}hold after{{end}}
+                                    </button>
+                                </form>
+                                {{end}}
+                            </span>
+                            <span class="flow-actions">
+                                <form method="POST" action="/api/flow/item/move" class="inline">
+                                    <input type="hidden" name="playlist_id" value="{{$pl.ID}}">
+                                    <input type="hidden" name="id" value="{{$it.ID}}">
+                                    <input type="hidden" name="dir" value="up">
+                                    <button class="btn btn-sm btn-outline" type="submit">↑</button>
+                                </form>
+                                <form method="POST" action="/api/flow/item/move" class="inline">
+                                    <input type="hidden" name="playlist_id" value="{{$pl.ID}}">
+                                    <input type="hidden" name="id" value="{{$it.ID}}">
+                                    <input type="hidden" name="dir" value="down">
+                                    <button class="btn btn-sm btn-outline" type="submit">↓</button>
+                                </form>
+                                <form method="POST" action="/api/flow/item/delete" class="inline">
+                                    <input type="hidden" name="playlist_id" value="{{$pl.ID}}">
+                                    <input type="hidden" name="id" value="{{$it.ID}}">
+                                    <button class="btn btn-sm btn-danger" type="submit">✕</button>
+                                </form>
+                            </span>
+                        </li>
+                        {{else}}
+                        <li class="empty">No items yet — add songs, breaks, or holds below.</li>
+                        {{end}}
+                    </ol>
+
+                    <!-- Add item -->
+                    <div class="add-row">
+                        <form method="POST" action="/api/flow/item/add" class="add-form">
+                            <input type="hidden" name="playlist_id" value="{{$pl.ID}}">
+                            <input type="hidden" name="type" value="song">
+                            <select name="track_id" required>
+                                <option value="" disabled selected>Add a song…</option>
+                                {{range .Extra.Tracks}}
+                                <option value="{{.ID}}">{{if .Artist}}{{.Artist}} — {{end}}{{.Title}}</option>
+                                {{end}}
+                            </select>
+                            <button class="btn btn-sm btn-primary" type="submit">+ Song</button>
+                        </form>
+
+                        <form method="POST" action="/api/flow/item/add" class="add-form">
+                            <input type="hidden" name="playlist_id" value="{{$pl.ID}}">
+                            <input type="hidden" name="type" value="break">
+                            <input type="number" name="break_sec" value="20" min="1" max="3600">
+                            <button class="btn btn-sm btn-primary" type="submit">+ Break (s)</button>
+                        </form>
+
+                        <form method="POST" action="/api/flow/item/add" class="add-form">
+                            <input type="hidden" name="playlist_id" value="{{$pl.ID}}">
+                            <input type="hidden" name="type" value="gate">
+                            <input name="label" placeholder="Hold label (optional)">
+                            <button class="btn btn-sm btn-primary" type="submit">+ Manual hold</button>
+                        </form>
+                    </div>
+                {{else}}
+                    <p class="empty">Select a show on the left, or create a new one.</p>
+                {{end}}
+                </section>
+            </div>
+        </main>
+    </div>
+</body>
+</html>
+{{end}}

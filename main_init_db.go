@@ -1,0 +1,81 @@
+package main
+
+import (
+	"database/sql"
+	"log"
+)
+
+// initDB creates the SQLite schema if it does not already exist. SQLite with
+// the pure-Go modernc driver keeps the container single-binary (no CGO).
+func initDB(db *sql.DB) error {
+	// Pragmas: WAL for concurrent reads during playout, foreign keys on.
+	if _, err := db.Exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;`); err != nil {
+		return err
+	}
+
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS users (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			username TEXT NOT NULL UNIQUE,
+			password_hash TEXT NOT NULL,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+
+		`CREATE TABLE IF NOT EXISTS tracks (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			title TEXT NOT NULL,
+			artist TEXT NOT NULL DEFAULT '',
+			source TEXT NOT NULL DEFAULT 'upload',   -- 'youtube' | 'upload'
+			file_path TEXT NOT NULL,
+			duration_sec REAL NOT NULL DEFAULT 0,
+			added_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+
+		`CREATE TABLE IF NOT EXISTS playlists (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+
+		`CREATE TABLE IF NOT EXISTS flow_items (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+			position INTEGER NOT NULL,
+			type TEXT NOT NULL,                       -- 'song' | 'break' | 'gate'
+			track_id INTEGER REFERENCES tracks(id) ON DELETE SET NULL,
+			break_sec INTEGER NOT NULL DEFAULT 0,
+			label TEXT NOT NULL DEFAULT '',
+			auto_next INTEGER NOT NULL DEFAULT 1      -- bool: continue automatically after this item
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_flow_items_playlist ON flow_items(playlist_id, position)`,
+
+		`CREATE TABLE IF NOT EXISTS soundboard_clips (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			file_path TEXT NOT NULL,
+			pcm_path TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+
+		`CREATE TABLE IF NOT EXISTS settings (
+			id INTEGER PRIMARY KEY CHECK (id = 1),
+			rtmp_url TEXT NOT NULL DEFAULT '',
+			stream_key TEXT NOT NULL DEFAULT '',
+			bg_image_path TEXT NOT NULL DEFAULT '',
+			video_fps INTEGER NOT NULL DEFAULT 10,
+			audio_bitrate TEXT NOT NULL DEFAULT '160k',
+			theme TEXT NOT NULL DEFAULT 'teal'
+		)`,
+		`INSERT OR IGNORE INTO settings (id) VALUES (1)`,
+	}
+
+	for _, s := range stmts {
+		if _, err := db.Exec(s); err != nil {
+			return err
+		}
+	}
+
+	log.Println("SQLite schema initialized")
+	return nil
+}

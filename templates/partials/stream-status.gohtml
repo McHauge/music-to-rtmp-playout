@@ -1,0 +1,41 @@
+{{define "stream-status"}}
+<div id="stream-status">
+    {{$s := .Status}}
+    <div class="status-banner {{if .Running}}live{{else}}offline{{end}}">
+        {{if .Running}}
+            <span class="dot"></span> LIVE
+        {{else}}
+            <span class="dot"></span> OFF AIR
+        {{end}}
+    </div>
+
+    {{if $s.Error}}
+        <div class="alert-error">{{$s.Error}}</div>
+    {{end}}
+
+    <div class="now-card">
+        <div class="now-label">Now</div>
+        <div class="now-title">{{if $s.NowPlaying}}{{$s.NowPlaying}}{{else}}—{{end}}</div>
+        <div class="now-next">Next: {{if $s.NextUp}}{{$s.NextUp}}{{else}}—{{end}}</div>
+        <div class="now-meta">
+            {{if .Running}}
+                Item {{add $s.ItemIndex 1}} / {{$s.TotalItems}} ·
+                Elapsed {{fmtDuration $s.ElapsedSec}}
+                {{if gt $s.ActiveVoices 0}}· 🔊 {{$s.ActiveVoices}} clip(s){{end}}
+            {{end}}
+        </div>
+    </div>
+
+    <div class="control-row">
+        {{if .Running}}
+            {{if $s.Holding}}
+                <button class="btn btn-primary btn-lg" data-on-click="@post('/api/stream/play')">▶ Play next</button>
+            {{end}}
+            <button class="btn btn-outline" data-on-click="@post('/api/stream/skip')">⏭ Skip</button>
+            <button class="btn btn-danger" data-on-click="@post('/api/stream/stop')">⏹ Stop stream</button>
+        {{else}}
+            <span class="muted">Pick a show below and press Start to go live.</span>
+        {{end}}
+    </div>
+</div>
+{{end}}

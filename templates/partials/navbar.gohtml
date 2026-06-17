@@ -1,0 +1,17 @@
+{{define "navbar"}}
+<nav class="navbar">
+    <a href="/stream" class="nav-brand">▶ Playout</a>
+    <div class="nav-links">
+        <a href="/stream"     class="nav-link {{if eq .Page "stream"}}active{{end}}">Stream</a>
+        <a href="/flow"       class="nav-link {{if eq .Page "flow"}}active{{end}}">Flow</a>
+        <a href="/library"    class="nav-link {{if eq .Page "library"}}active{{end}}">Library</a>
+        <a href="/soundboard" class="nav-link {{if eq .Page "soundboard"}}active{{end}}">Soundboard</a>
+        <a href="/settings"   class="nav-link {{if eq .Page "settings"}}active{{end}}">Settings</a>
+    </div>
+    <div class="nav-right">
+        <form method="POST" action="/logout" style="margin:0">
+            <button class="btn btn-outline btn-sm" type="submit">Sign out</button>
+        </form>
+    </div>
+</nav>
+{{end}}
