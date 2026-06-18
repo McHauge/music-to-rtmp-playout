@@ -14,9 +14,9 @@
                     <h2>Import from YouTube</h2>
                     <p class="muted">Paste a video or playlist URL. Audio is downloaded via yt-dlp.</p>
                     <div class="import-row">
-                        <input data-bind-url placeholder="https://youtube.com/watch?v=… or playlist URL">
+                        <input data-bind:url placeholder="https://youtube.com/watch?v=… or playlist URL">
                         <button class="btn btn-primary"
-                                data-on-click="@get('/api/library/import?url=' + encodeURIComponent($url))">
+                                data-on:click="@get('/api/library/import?url=' + encodeURIComponent($url))">
                             Import
                         </button>
                     </div>

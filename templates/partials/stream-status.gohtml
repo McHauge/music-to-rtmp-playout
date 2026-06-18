@@ -29,10 +29,10 @@
     <div class="control-row">
         {{if .Running}}
             {{if $s.Holding}}
-                <button class="btn btn-primary btn-lg" data-on-click="@post('/api/stream/play')">▶ Play next</button>
+                <button class="btn btn-primary btn-lg" data-on:click="@post('/api/stream/play')">▶ Play next</button>
             {{end}}
-            <button class="btn btn-outline" data-on-click="@post('/api/stream/skip')">⏭ Skip</button>
-            <button class="btn btn-danger" data-on-click="@post('/api/stream/stop')">⏹ Stop stream</button>
+            <button class="btn btn-outline" data-on:click="@post('/api/stream/skip')">⏭ Skip</button>
+            <button class="btn btn-danger" data-on:click="@post('/api/stream/stop')">⏹ Stop stream</button>
         {{else}}
             <span class="muted">Pick a show below and press Start to go live.</span>
         {{end}}

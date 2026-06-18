@@ -26,7 +26,7 @@
                 <div class="clip-grid">
                     {{range .Extra.Clips}}
                     <div class="clip">
-                        <button class="clip-btn" data-on-click="@post('/api/soundboard/trigger?id={{.ID}}')">
+                        <button class="clip-btn" data-on:click="@post('/api/soundboard/trigger?id={{.ID}}')">
                             🔊 {{.Name}}
                         </button>
                         <form method="POST" action="/api/soundboard/delete" onsubmit="return confirm('Delete clip?')">

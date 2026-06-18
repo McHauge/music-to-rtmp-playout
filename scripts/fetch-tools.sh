@@ -1,6 +1,7 @@
 #!/bin/sh
-# Downloads self-contained ffmpeg, ffprobe, and yt-dlp into ./bin so the app
-# needs nothing installed on the host. Re-run to update the binaries.
+# Downloads self-contained ffmpeg, ffprobe, and yt-dlp into ./bin (plus the
+# Datastar client bundle into static/vendor) so the app needs nothing installed
+# on the host. Re-run to update the binaries.
 #
 #   ./scripts/fetch-tools.sh
 set -e
@@ -8,6 +9,15 @@ set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="$ROOT/bin"
 mkdir -p "$BIN"
+
+# Datastar client bundle. MUST match the datastar-go SDK in go.mod (v1.x).
+# Datastar parses keyed attributes with a colon (data-on:click), so the
+# templates and this bundle version have to stay in lockstep.
+DATASTAR_VERSION="v1.0.2"
+mkdir -p "$ROOT/static/vendor"
+echo "==> datastar $DATASTAR_VERSION"
+curl -L --fail -o "$ROOT/static/vendor/datastar.js" \
+    "https://cdn.jsdelivr.net/gh/starfederation/datastar@${DATASTAR_VERSION}/bundles/datastar.js"
 
 OS="$(uname -s)"
 ARCH="$(uname -m)"

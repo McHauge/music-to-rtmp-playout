@@ -1,5 +1,6 @@
-# Downloads self-contained ffmpeg, ffprobe, and yt-dlp into ./bin so the app
-# needs nothing installed on the host. Re-run to update the binaries.
+# Downloads self-contained ffmpeg, ffprobe, and yt-dlp into ./bin (plus the
+# Datastar client bundle into static/vendor) so the app needs nothing installed
+# on the host. Re-run to update the binaries.
 #
 #   pwsh ./scripts/fetch-tools.ps1
 $ErrorActionPreference = 'Stop'
@@ -7,6 +8,16 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $bin  = Join-Path $root 'bin'
 New-Item -ItemType Directory -Force -Path $bin | Out-Null
+
+# Datastar client bundle. MUST match the datastar-go SDK in go.mod (v1.x).
+# Datastar parses keyed attributes with a colon (data-on:click), so the
+# templates and this bundle version have to stay in lockstep.
+$datastarVersion = 'v1.0.2'
+$vendor = Join-Path $root 'static/vendor'
+New-Item -ItemType Directory -Force -Path $vendor | Out-Null
+Write-Host "==> datastar $datastarVersion"
+Invoke-WebRequest -Uri "https://cdn.jsdelivr.net/gh/starfederation/datastar@$datastarVersion/bundles/datastar.js" `
+    -OutFile (Join-Path $vendor 'datastar.js')
 
 Write-Host '==> yt-dlp'
 Invoke-WebRequest -Uri 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe' `
