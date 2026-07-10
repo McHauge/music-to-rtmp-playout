@@ -103,12 +103,13 @@ func (e *Engine) Start(items []services.FlowItem, set services.Settings) error {
 		return err
 	}
 
+	vm := &voiceMixer{}
 	e.running = true
 	e.cmd = make(chan command, 8)
-	e.vmix = &voiceMixer{}
+	e.vmix = vm
 	e.mu.Unlock()
 
-	go e.run(enc, items)
+	go e.run(enc, items, vm)
 	return nil
 }
 
@@ -147,8 +148,9 @@ func (e *Engine) TriggerClip(pcmPath string, gain float64) error {
 	return vm.Trigger(pcmPath, gain)
 }
 
-// run is the single owner of playback state.
-func (e *Engine) run(enc *encoder, items []services.FlowItem) {
+// run is the single owner of playback state. vmix is passed in (rather than
+// read from e.vmix) so the hot loop never touches the shared field.
+func (e *Engine) run(enc *encoder, items []services.FlowItem, vmix *voiceMixer) {
 	defer func() {
 		enc.Stop()
 		e.mu.Lock()
@@ -162,7 +164,7 @@ func (e *Engine) run(enc *encoder, items []services.FlowItem) {
 
 	start := time.Now()
 	lead := int64(sampleRate * 300 / 1000) // 300ms startup lead
-	written := int64(0)                     // frames written
+	written := int64(0)                    // frames written
 	lastText := ""
 
 	publish := func() {
@@ -175,7 +177,7 @@ func (e *Engine) run(enc *encoder, items []services.FlowItem) {
 			NowPlaying:   p.nowPlayingDesc(),
 			NextUp:       p.nextUpDesc(),
 			ElapsedSec:   time.Since(start).Seconds(),
-			ActiveVoices: e.vmix.active(),
+			ActiveVoices: vmix.active(),
 		}
 		e.setStatus(s)
 
@@ -220,7 +222,7 @@ func (e *Engine) run(enc *encoder, items []services.FlowItem) {
 		for written < target {
 			chunk := silence(chunkBytes)
 			p.fill(chunk)
-			e.vmix.mixInto(chunk)
+			vmix.mixInto(chunk)
 			if err := enc.Write(chunk); err != nil {
 				log.Printf("playout: encoder write failed (ffmpeg exited?): %v", err)
 				s := Status{Error: "stream encoder stopped: " + err.Error()}

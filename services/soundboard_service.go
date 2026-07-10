@@ -12,8 +12,8 @@ import (
 
 // Canonical PCM format used everywhere in the playout pipeline.
 const (
-	SampleRate = 48000
-	Channels   = 2
+	SampleRate     = 48000
+	Channels       = 2
 	BytesPerSample = 2 // s16le
 )
 

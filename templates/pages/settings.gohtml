@@ -10,7 +10,7 @@
             <h1 class="page-title">Settings</h1>
 
             <section class="card glass settings-card">
-                <form method="POST" action="/api/settings/save" class="settings-form">
+                <form method="POST" action="/api/settings/save" enctype="multipart/form-data" class="settings-form">
                     {{$st := .Extra.Settings}}
 
                     <h2>RTMP target</h2>
@@ -27,6 +27,11 @@
                     <label class="field">
                         <span>Background image path</span>
                         <input name="bg_image_path" value="{{$st.BgImagePath}}" placeholder="./assets/bg.png (blank = solid color)">
+                    </label>
+                    <label class="field">
+                        <span>…or upload a background image</span>
+                        <input type="file" name="bg_image_file" accept=".png,.jpg,.jpeg,.webp,.bmp">
+                        <span class="muted small">Saved to the assets folder; overrides the path above when set.</span>
                     </label>
                     <div class="field-row">
                         <label class="field">

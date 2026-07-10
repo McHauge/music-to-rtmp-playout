@@ -29,9 +29,9 @@ type Config struct {
 	MaxUploadSize int64
 
 	// External tools
-	FFmpegPath string
+	FFmpegPath  string
 	FFprobePath string
-	YtDlpPath  string
+	YtDlpPath   string
 
 	// Playout / encoder defaults (overridable per-show in settings)
 	RTMPURL      string // upstream RTMP target, e.g. rtmp://localhost:1935/live/show

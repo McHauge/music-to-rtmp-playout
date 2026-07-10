@@ -1,9 +1,14 @@
 package handlers
 
 import (
+	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 
 	"music-to-rtmp-playout/services"
 )
@@ -59,11 +64,13 @@ func (app *App) FlowPage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// StreamPage is the operator console.
+// StreamPage is the operator console. An optional ?play= query param
+// pre-selects that show in the start dropdown (deep link from the flow page).
 func (app *App) StreamPage(w http.ResponseWriter, r *http.Request) {
 	playlists, _ := app.Flow.ListPlaylists()
 	st, _ := app.Settings.Get()
 	status := app.Engine.Status()
+	playID, _ := strconv.ParseInt(r.URL.Query().Get("play"), 10, 64)
 	app.render(w, "page-stream", PageData{
 		Title: "Stream", Page: "stream", Theme: app.currentTheme(),
 		Extra: map[string]any{
@@ -71,6 +78,7 @@ func (app *App) StreamPage(w http.ResponseWriter, r *http.Request) {
 			"Settings":  st,
 			"Status":    status,
 			"Running":   app.Engine.Running(),
+			"PlayID":    playID,
 		},
 	})
 }
@@ -93,17 +101,31 @@ func (app *App) SettingsPage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// SaveSettings persists the settings form.
+// SaveSettings persists the settings form. An optional uploaded background
+// image is stored in the assets dir and takes precedence over the path field.
 func (app *App) SaveSettings(w http.ResponseWriter, r *http.Request) {
-	_ = r.ParseForm()
+	if err := r.ParseMultipartForm(app.Cfg.MaxUploadSize); err != nil {
+		http.Error(w, "form too large", http.StatusBadRequest)
+		return
+	}
 	fps, _ := strconv.Atoi(r.FormValue("video_fps"))
 	if fps <= 0 {
 		fps = 10
 	}
+	bgPath := r.FormValue("bg_image_path")
+	if file, hdr, err := r.FormFile("bg_image_file"); err == nil {
+		defer file.Close()
+		saved, err := app.saveBackground(hdr.Filename, file)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		bgPath = saved
+	}
 	st := services.Settings{
 		RTMPURL:      r.FormValue("rtmp_url"),
 		StreamKey:    r.FormValue("stream_key"),
-		BgImagePath:  r.FormValue("bg_image_path"),
+		BgImagePath:  bgPath,
 		VideoFPS:     fps,
 		AudioBitrate: r.FormValue("audio_bitrate"),
 		Theme:        r.FormValue("theme"),
@@ -116,4 +138,29 @@ func (app *App) SaveSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/settings", http.StatusSeeOther)
+}
+
+// saveBackground stores an uploaded background image in the assets directory
+// (as bg.<ext>, replacing any previous upload of the same type) and returns
+// the path to store in settings.
+func (app *App) saveBackground(name string, src io.Reader) (string, error) {
+	ext := strings.ToLower(filepath.Ext(name))
+	switch ext {
+	case ".png", ".jpg", ".jpeg", ".webp", ".bmp":
+	default:
+		return "", fmt.Errorf("unsupported image type %q (use png, jpg, webp, or bmp)", ext)
+	}
+	if err := os.MkdirAll(app.Cfg.AssetsDir, 0o755); err != nil {
+		return "", err
+	}
+	dst := filepath.Join(app.Cfg.AssetsDir, "bg"+ext)
+	f, err := os.Create(dst)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	if _, err := io.Copy(f, src); err != nil {
+		return "", err
+	}
+	return dst, nil
 }
