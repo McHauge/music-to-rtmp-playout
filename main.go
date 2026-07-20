@@ -128,6 +128,8 @@ func main() {
 	r.HandleFunc("/api/flow/item/delete", app.RequireAuth(app.DeleteItem)).Methods("POST")
 	r.HandleFunc("/api/flow/item/move", app.RequireAuth(app.MoveItem)).Methods("POST")
 	r.HandleFunc("/api/flow/item/autonext", app.RequireAuth(app.ToggleAutoNext)).Methods("POST")
+	r.HandleFunc("/api/flow/reorder", app.RequireAuth(app.ReorderItems)).Methods("POST")
+	r.HandleFunc("/api/flow/bulk-upload", app.RequireAuth(app.BulkUploadToFlow)).Methods("POST")
 
 	// Soundboard API.
 	r.HandleFunc("/api/soundboard/upload", app.RequireAuth(app.UploadClip)).Methods("POST")
@@ -139,6 +141,13 @@ func main() {
 	r.HandleFunc("/api/stream/stop", app.RequireAuth(app.StopStream)).Methods("POST", "GET")
 	r.HandleFunc("/api/stream/skip", app.RequireAuth(app.SkipItem)).Methods("POST", "GET")
 	r.HandleFunc("/api/stream/play", app.RequireAuth(app.PlayResume)).Methods("POST", "GET")
+	r.HandleFunc("/api/stream/pause", app.RequireAuth(app.PauseStream)).Methods("POST", "GET")
+	r.HandleFunc("/api/stream/prev", app.RequireAuth(app.PrevItem)).Methods("POST", "GET")
+	r.HandleFunc("/api/stream/restart", app.RequireAuth(app.RestartItem)).Methods("POST", "GET")
+	r.HandleFunc("/api/stream/jump", app.RequireAuth(app.JumpToItem)).Methods("POST", "GET")
+	r.HandleFunc("/api/stream/pause-after", app.RequireAuth(app.TogglePauseAfter)).Methods("POST", "GET")
+	r.HandleFunc("/api/stream/autonext", app.RequireAuth(app.StreamSetAutoNext)).Methods("POST", "GET")
+	r.HandleFunc("/api/stream/rundown", app.RequireAuth(app.StreamRundown)).Methods("GET")
 	r.HandleFunc("/api/stream/status", app.RequireAuth(app.StreamStatus)).Methods("GET")
 
 	// Settings.

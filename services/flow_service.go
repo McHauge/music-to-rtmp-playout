@@ -14,7 +14,7 @@ func NewFlowService(db *sql.DB) *FlowService { return &FlowService{db: db} }
 
 // ListPlaylists returns all shows, newest first.
 func (s *FlowService) ListPlaylists() ([]Playlist, error) {
-	rows, err := s.db.Query(`SELECT id, name, created_at, updated_at FROM playlists ORDER BY updated_at DESC, id DESC`)
+	rows, err := s.db.Query(`SELECT id, name, default_break_sec, created_at, updated_at FROM playlists ORDER BY updated_at DESC, id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -22,7 +22,7 @@ func (s *FlowService) ListPlaylists() ([]Playlist, error) {
 	var out []Playlist
 	for rows.Next() {
 		var p Playlist
-		if err := rows.Scan(&p.ID, &p.Name, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.DefaultBreakSec, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -33,8 +33,8 @@ func (s *FlowService) ListPlaylists() ([]Playlist, error) {
 // GetPlaylist returns one show by id.
 func (s *FlowService) GetPlaylist(id int64) (*Playlist, error) {
 	var p Playlist
-	err := s.db.QueryRow(`SELECT id, name, created_at, updated_at FROM playlists WHERE id = ?`, id).
-		Scan(&p.ID, &p.Name, &p.CreatedAt, &p.UpdatedAt)
+	err := s.db.QueryRow(`SELECT id, name, default_break_sec, created_at, updated_at FROM playlists WHERE id = ?`, id).
+		Scan(&p.ID, &p.Name, &p.DefaultBreakSec, &p.CreatedAt, &p.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -59,6 +59,15 @@ func (s *FlowService) CreatePlaylist(name string) (int64, error) {
 // RenamePlaylist updates a show's name.
 func (s *FlowService) RenamePlaylist(id int64, name string) error {
 	_, err := s.db.Exec(`UPDATE playlists SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, name, id)
+	return err
+}
+
+// SetDefaultBreakSec persists a show's preferred spacing between songs.
+func (s *FlowService) SetDefaultBreakSec(id int64, sec int) error {
+	if sec < 0 {
+		sec = 0
+	}
+	_, err := s.db.Exec(`UPDATE playlists SET default_break_sec = ? WHERE id = ?`, sec, id)
 	return err
 }
 
@@ -173,6 +182,12 @@ func (s *FlowService) EstimateRuntimeSec(playlistID int64) (float64, error) {
 	if err != nil {
 		return 0, err
 	}
+	return SumRuntimeSec(items), nil
+}
+
+// SumRuntimeSec totals the known length of a flow: songs (track duration) plus
+// breaks; gates/holds have no fixed length and count as zero.
+func SumRuntimeSec(items []FlowItem) float64 {
 	var total float64
 	for _, it := range items {
 		switch it.Type {
@@ -184,7 +199,7 @@ func (s *FlowService) EstimateRuntimeSec(playlistID int64) (float64, error) {
 			total += float64(it.BreakSec)
 		}
 	}
-	return total, nil
+	return total
 }
 
 func (s *FlowService) touch(playlistID int64) {

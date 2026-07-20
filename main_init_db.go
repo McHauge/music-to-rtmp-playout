@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"log"
+	"strings"
 )
 
 // initDB creates the SQLite schema if it does not already exist. SQLite with
@@ -34,6 +35,7 @@ func initDB(db *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS playlists (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL,
+			default_break_sec INTEGER NOT NULL DEFAULT 20,
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
@@ -76,6 +78,21 @@ func initDB(db *sql.DB) error {
 		}
 	}
 
+	// Additive migrations for databases created before these columns existed.
+	if err := ensureColumn(db, "playlists", "default_break_sec INTEGER NOT NULL DEFAULT 20"); err != nil {
+		return err
+	}
+
 	log.Println("SQLite schema initialized")
 	return nil
+}
+
+// ensureColumn adds a column to an existing table; a "duplicate column name"
+// error means it is already there and is ignored.
+func ensureColumn(db *sql.DB, table, columnDef string) error {
+	_, err := db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + columnDef)
+	if err != nil && strings.Contains(err.Error(), "duplicate column") {
+		return nil
+	}
+	return err
 }

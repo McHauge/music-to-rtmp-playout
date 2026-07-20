@@ -6,6 +6,8 @@ import (
 	"html/template"
 	"path/filepath"
 	"time"
+
+	"music-to-rtmp-playout/services"
 )
 
 // Templates holds the parsed template set.
@@ -51,6 +53,34 @@ func templateFuncs() template.FuncMap {
 		"sub":         func(a, b int) int { return a - b },
 		"printf":      fmt.Sprintf,
 		"fmtDuration": fmtDuration,
+		"fmtSecs":     func(sec int) string { return fmtDuration(float64(sec)) },
+		// runtimeSec totals a flow's known length (songs + breaks) for the rundown
+		// footer's "total estimated runtime".
+		"runtimeSec": services.SumRuntimeSec,
+		// remaining formats the time left of an item (clamped at zero), e.g. for
+		// a "-1:31" countdown next to the now-playing progress bar.
+		"remaining": func(dur, elapsed float64) string {
+			r := dur - elapsed
+			if r < 0 {
+				r = 0
+			}
+			return fmtDuration(r)
+		},
+		// pct is the completion percentage (0–100) of elapsed within dur, for the
+		// now-playing progress-bar width.
+		"pct": func(elapsed, dur float64) int {
+			if dur <= 0 {
+				return 0
+			}
+			p := int(elapsed / dur * 100)
+			if p < 0 {
+				p = 0
+			}
+			if p > 100 {
+				p = 100
+			}
+			return p
+		},
 	}
 }
 

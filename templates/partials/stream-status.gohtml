@@ -1,11 +1,13 @@
 {{define "stream-status"}}
 <div id="stream-status">
     {{$s := .Status}}
-    <div class="status-banner {{if .Running}}live{{else}}offline{{end}}">
-        {{if .Running}}
-            <span class="dot"></span> LIVE
-        {{else}}
+    <div class="status-banner {{if not .Running}}offline{{else if $s.Finished}}done{{else}}live{{end}}">
+        {{if not .Running}}
             <span class="dot"></span> OFF AIR
+        {{else if $s.Finished}}
+            <span class="dot"></span> ✓ FINISHED
+        {{else}}
+            <span class="dot"></span> LIVE{{if or $s.Paused $s.Holding}} · PAUSED{{end}}
         {{end}}
     </div>
 
@@ -16,23 +18,51 @@
     <div class="now-card">
         <div class="now-label">Now</div>
         <div class="now-title">{{if $s.NowPlaying}}{{$s.NowPlaying}}{{else}}—{{end}}</div>
+        {{if not $s.Finished}}
         <div class="now-next">Next: {{if $s.NextUp}}{{$s.NextUp}}{{else}}—{{end}}</div>
+        {{end}}
         <div class="now-meta">
             {{if .Running}}
-                Item {{add $s.ItemIndex 1}} / {{$s.TotalItems}} ·
-                Elapsed {{fmtDuration $s.ElapsedSec}}
-                {{if gt $s.ActiveVoices 0}}· 🔊 {{$s.ActiveVoices}} clip(s){{end}}
+                {{if $s.Finished}}
+                    All {{$s.TotalItems}} items played · Show {{fmtDuration $s.ElapsedSec}}
+                {{else}}
+                    Item {{add $s.ItemIndex 1}} / {{$s.TotalItems}} ·
+                    Show {{fmtDuration $s.ElapsedSec}}
+                    {{if gt $s.ActiveVoices 0}}· 🔊 {{$s.ActiveVoices}} clip(s){{end}}
+                {{end}}
             {{end}}
         </div>
+        {{if and .Running (gt $s.ItemDurationSec 0.0)}}
+        <div class="now-progress">
+            <div class="now-times">
+                <span class="now-elapsed">{{fmtDuration $s.ItemElapsedSec}}</span>
+                <span class="now-remain">-{{remaining $s.ItemDurationSec $s.ItemElapsedSec}} left</span>
+                <span class="now-total">{{fmtDuration $s.ItemDurationSec}}</span>
+            </div>
+            <div class="progress-track">
+                <div class="progress-fill" style="width: {{pct $s.ItemElapsedSec $s.ItemDurationSec}}%"></div>
+            </div>
+        </div>
+        {{end}}
     </div>
 
     <div class="control-row">
         {{if .Running}}
+            <button class="btn btn-outline" data-on:click="@post('/api/stream/prev')" title="Previous item">⏮ Prev</button>
             {{if $s.Holding}}
-                <button class="btn btn-primary btn-lg" data-on:click="@post('/api/stream/play')">▶ Play next</button>
+                <button class="btn btn-primary" data-on:click="@post('/api/stream/play')">▶ Play next</button>
+            {{else if $s.Paused}}
+                <button class="btn btn-primary" data-on:click="@post('/api/stream/play')">▶ {{if lt $s.ItemElapsedSec 0.5}}Play{{else}}Resume{{end}}</button>
+            {{else}}
+                <button class="btn btn-outline" data-on:click="@post('/api/stream/pause')">⏸ Pause</button>
             {{end}}
-            <button class="btn btn-outline" data-on:click="@post('/api/stream/skip')">⏭ Skip</button>
-            <button class="btn btn-danger" data-on:click="@post('/api/stream/stop')">⏹ Stop stream</button>
+            <button class="btn btn-outline" data-on:click="@post('/api/stream/skip')" title="Next item">⏭ Next</button>
+            <button class="btn btn-outline" data-on:click="@post('/api/stream/restart')" title="Restart the current item from its beginning">↺ Restart</button>
+            <button class="btn {{if $s.PauseAfterArmed}}btn-primary{{else}}btn-outline{{end}}"
+                    data-on:click="@post('/api/stream/pause-after')"
+                    title="Pause automatically when the current item finishes (one-shot)">
+                ⏸ Pause after item
+            </button>
         {{else}}
             <span class="muted">Pick a show below and press Start to go live.</span>
         {{end}}

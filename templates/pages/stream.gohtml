@@ -2,7 +2,8 @@
 <!DOCTYPE html>
 <html lang="en" data-theme="{{.Theme}}">
 {{template "head" .}}
-<body data-init="@get('/api/stream/status')">
+<body data-init="@get('/api/stream/status')"
+      data-signals="{showElapsedSec:0, showElapsedFmt:''}">
     {{template "orbs" .}}
     <div class="wrapper">
         {{template "navbar" .}}
@@ -18,25 +19,39 @@
                 <section class="card glass">
                     <h2>Start a show</h2>
                     <p class="muted">Streaming to <code>{{.Extra.Settings.RTMPURL}}</code></p>
-                    <div class="start-row" data-signals="{play:{{.Extra.PlayID}}}">
-                        <select data-bind:play>
+                    <div class="start-row" data-signals="{play:{{.Extra.PlayID}}, startAt:{{.Extra.StartAt}}, running:{{.Extra.Running}}}">
+                        <select data-bind:play data-on:change="@get('/api/stream/rundown?id=' + $play)"
+                                data-attr:disabled="$running"
+                                title="Stop the stream to switch shows">
                             <option value="0" disabled {{if not .Extra.PlayID}}selected{{end}}>Choose a show…</option>
                             {{range .Extra.Playlists}}
                             <option value="{{.ID}}" {{if eq .ID $.Extra.PlayID}}selected{{end}}>{{.Name}}</option>
                             {{end}}
                         </select>
                         <button class="btn btn-primary btn-lg"
-                                data-on:click="@post('/api/stream/start?id=' + $play)"
-                                {{if .Extra.Running}}disabled{{end}}>
+                                data-show="!$running"
+                                data-on:click="@post('/api/stream/start?id=' + $play + '&at=' + $startAt)">
                             ● Start stream
+                        </button>
+                        <button class="btn btn-danger btn-lg"
+                                data-show="$running"
+                                data-on:click="@post('/api/stream/stop')">
+                            ■ Stop stream
                         </button>
                     </div>
                     <p class="muted small">
-                        The stream stays live across songs, breaks, and holds. Configure the
-                        RTMP target and background in <a href="/settings">Settings</a>.
+                        Starts from the row selected in the rundown below. Switching shows is
+                        locked while live — stop the stream first. The stream stays live across
+                        songs, breaks, and holds. Configure the RTMP target and background in
+                        <a href="/settings">Settings</a>.
                     </p>
                 </section>
             </div>
+
+            <section class="card glass">
+                <h2>Rundown</h2>
+                {{template "stream-rundown" .Extra.Rundown}}
+            </section>
         </main>
     </div>
 </body>

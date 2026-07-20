@@ -52,9 +52,9 @@ func (app *App) FlowPage(w http.ResponseWriter, r *http.Request) {
 				tracks, _ := app.Library.ListTracks()
 				runtime, _ := app.Flow.EstimateRuntimeSec(id)
 				extra["Selected"] = pl
-				extra["Items"] = items
 				extra["Tracks"] = tracks
 				extra["RuntimeSec"] = runtime
+				extra["Rundown"] = map[string]any{"Playlist": pl, "Items": items}
 			}
 		}
 	}
@@ -70,15 +70,25 @@ func (app *App) StreamPage(w http.ResponseWriter, r *http.Request) {
 	playlists, _ := app.Flow.ListPlaylists()
 	st, _ := app.Settings.Get()
 	status := app.Engine.Status()
+	running := status.Running
 	playID, _ := strconv.ParseInt(r.URL.Query().Get("play"), 10, 64)
+
+	// After a stop, preselect the last position so Start acts as "continue".
+	startAt := 0
+	if !running && status.PlaylistID != 0 && (playID == 0 || playID == status.PlaylistID) {
+		startAt = status.ItemIndex
+	}
+
 	app.render(w, "page-stream", PageData{
 		Title: "Stream", Page: "stream", Theme: app.currentTheme(),
 		Extra: map[string]any{
 			"Playlists": playlists,
 			"Settings":  st,
 			"Status":    status,
-			"Running":   app.Engine.Running(),
+			"Running":   running,
 			"PlayID":    playID,
+			"StartAt":   startAt,
+			"Rundown":   app.rundownData(playID),
 		},
 	})
 }

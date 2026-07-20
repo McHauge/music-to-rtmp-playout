@@ -23,10 +23,11 @@ func (t Track) Display() string {
 
 // Playlist (a "show") owns an ordered list of FlowItems.
 type Playlist struct {
-	ID        int64
-	Name      string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID              int64
+	Name            string
+	DefaultBreakSec int // preferred spacing between songs, in seconds
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 // FlowItem types.

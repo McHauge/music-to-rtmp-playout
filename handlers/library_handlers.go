@@ -11,21 +11,32 @@ import (
 	"github.com/starfederation/datastar-go/datastar"
 )
 
-// UploadTrack handles a multipart file upload into the library.
+// UploadTrack handles a multipart upload of one or more files into the library.
 func (app *App) UploadTrack(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseMultipartForm(app.Cfg.MaxUploadSize); err != nil {
 		http.Error(w, "upload too large", http.StatusBadRequest)
 		return
 	}
-	file, hdr, err := r.FormFile("file")
-	if err != nil {
+	files := r.MultipartForm.File["files"]
+	if len(files) == 0 {
+		files = r.MultipartForm.File["file"] // older form field name
+	}
+	if len(files) == 0 {
 		http.Error(w, "no file", http.StatusBadRequest)
 		return
 	}
-	defer file.Close()
-	if _, err := app.Library.AddUpload(hdr.Filename, file); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	for _, hdr := range files {
+		file, err := hdr.Open()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		_, err = app.Library.AddUpload(hdr.Filename, file)
+		file.Close()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	http.Redirect(w, r, "/library", http.StatusSeeOther)
 }

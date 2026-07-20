@@ -3,6 +3,7 @@ package handlers
 import (
 	"net/http"
 	"strconv"
+	"strings"
 )
 
 // CreatePlaylist makes a new show and opens its builder.
@@ -89,6 +90,29 @@ func (app *App) MoveItem(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	http.Redirect(w, r, "/flow?id="+strconv.FormatInt(plID, 10), http.StatusSeeOther)
+}
+
+// ReorderItems persists a full ordering posted by the drag-and-drop UI as a
+// comma-separated id list. The client DOM already shows the new order, so a
+// 204 is enough (see static/flow-dnd.js).
+func (app *App) ReorderItems(w http.ResponseWriter, r *http.Request) {
+	_ = r.ParseForm()
+	plID, _ := strconv.ParseInt(r.FormValue("playlist_id"), 10, 64)
+	var ids []int64
+	for _, part := range strings.Split(r.FormValue("ids"), ",") {
+		if id, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64); err == nil {
+			ids = append(ids, id)
+		}
+	}
+	if plID == 0 || len(ids) == 0 {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if err := app.Flow.Reorder(plID, ids); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // ToggleAutoNext flips an item's auto-continue flag.

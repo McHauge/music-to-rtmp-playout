@@ -16,16 +16,26 @@ const ringSize = bytesPerSec / 2
 
 // Status is a snapshot of the running show, published to the UI over SSE.
 type Status struct {
-	Running      bool    `json:"running"`
-	Holding      bool    `json:"holding"`  // waiting at a manual gate / hold
-	Finished     bool    `json:"finished"` // reached end of flow
-	ItemIndex    int     `json:"itemIndex"`
-	TotalItems   int     `json:"totalItems"`
-	NowPlaying   string  `json:"nowPlaying"`
-	NextUp       string  `json:"nextUp"`
-	ElapsedSec   float64 `json:"elapsedSec"`
-	ActiveVoices int     `json:"activeVoices"`
-	Error        string  `json:"error"`
+	Running         bool    `json:"running"`
+	Holding         bool    `json:"holding"`  // waiting at a manual gate / hold
+	Paused          bool    `json:"paused"`   // frozen mid-item by the operator
+	Finished        bool    `json:"finished"` // reached end of flow
+	PauseAfterArmed bool    `json:"pauseAfterArmed"`
+	ItemIndex       int     `json:"itemIndex"`
+	QueuedIndex     int     `json:"queuedIndex"` // operator-queued next item, -1 = none
+	TotalItems      int     `json:"totalItems"`
+	PlaylistID      int64   `json:"playlistID"`
+	NowPlaying      string  `json:"nowPlaying"`
+	NextUp          string  `json:"nextUp"`
+	ElapsedSec      float64 `json:"elapsedSec"`      // whole-show wall time
+	ItemElapsedSec  float64 `json:"itemElapsedSec"`  // position within the current item
+	ItemDurationSec float64 `json:"itemDurationSec"` // length of the current item, 0 if unknown
+	ActiveVoices    int     `json:"activeVoices"`
+	Error           string  `json:"error"`
+
+	// Played is the set of item indices already played (visited and departed),
+	// for dimming them in the rundown. Not serialized; consumed server-side.
+	Played map[int]bool `json:"-"`
 }
 
 // EngineConfig holds static dependencies for the engine.
@@ -43,10 +53,12 @@ type EngineConfig struct {
 type Engine struct {
 	cfg EngineConfig
 
-	mu      sync.Mutex
-	running bool
-	cmd     chan command
-	vmix    *voiceMixer
+	mu             sync.Mutex
+	running        bool
+	cmd            chan command
+	vmix           *voiceMixer
+	showItems      []services.FlowItem // snapshot of the current/most recent show
+	showPlaylistID int64
 
 	statusMu sync.RWMutex
 	status   Status
@@ -61,9 +73,19 @@ const (
 	cmdSkip cmdKind = iota
 	cmdPlay
 	cmdStop
+	cmdPause
+	cmdJump
+	cmdPrev
+	cmdRestart
+	cmdTogglePauseAfter
+	cmdSetAutoNext
 )
 
-type command struct{ kind cmdKind }
+type command struct {
+	kind  cmdKind
+	index int  // target item for cmdJump / cmdSetAutoNext
+	on    bool // new value for cmdSetAutoNext
+}
 
 // NewEngine constructs an idle engine.
 func NewEngine(cfg EngineConfig) *Engine {
@@ -77,13 +99,20 @@ func (e *Engine) Running() bool {
 	return e.running
 }
 
-// Start launches the encoder and begins playing the flow. Errors if a show is
-// already live or the encoder fails to start.
-func (e *Engine) Start(items []services.FlowItem, set services.Settings) error {
+// Start launches the encoder and begins playing the flow at item startAt
+// (clamped to the flow bounds). Errors if a show is already live or the
+// encoder fails to start.
+func (e *Engine) Start(items []services.FlowItem, set services.Settings, playlistID int64, startAt int) error {
 	e.mu.Lock()
 	if e.running {
 		e.mu.Unlock()
 		return errAlreadyRunning
+	}
+	if startAt < 0 {
+		startAt = 0
+	}
+	if startAt > len(items)-1 {
+		startAt = len(items) - 1
 	}
 
 	encCfg := encoderConfig{
@@ -107,20 +136,64 @@ func (e *Engine) Start(items []services.FlowItem, set services.Settings) error {
 	e.running = true
 	e.cmd = make(chan command, 8)
 	e.vmix = vm
+	// The run goroutine owns `items`; the UI reads an independent copy so
+	// SetItemAutoNext can update both sides without a data race.
+	e.showItems = append([]services.FlowItem(nil), items...)
+	e.showPlaylistID = playlistID
 	e.mu.Unlock()
 
-	go e.run(enc, items, vm)
+	// Seed the snapshot so status reads are live-mode before run's first publish.
+	// The show starts cued-and-paused; the operator presses Play to go on air.
+	e.setStatus(Status{Running: true, Paused: true, ItemIndex: startAt, QueuedIndex: -1, TotalItems: len(items), PlaylistID: playlistID})
+
+	go e.run(enc, items, vm, playlistID, startAt)
 	return nil
 }
 
+// Show returns a copy of the item snapshot and the playlist ID of the current
+// (or most recent) show.
+func (e *Engine) Show() ([]services.FlowItem, int64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]services.FlowItem(nil), e.showItems...), e.showPlaylistID
+}
+
 // Stop ends the show (idempotent).
-func (e *Engine) Stop() { e.send(command{cmdStop}) }
+func (e *Engine) Stop() { e.send(command{kind: cmdStop}) }
 
 // Skip abandons the current item and advances (works while playing or holding).
-func (e *Engine) Skip() { e.send(command{cmdSkip}) }
+func (e *Engine) Skip() { e.send(command{kind: cmdSkip}) }
 
-// Play releases a manual hold/gate so playout continues.
-func (e *Engine) Play() { e.send(command{cmdPlay}) }
+// Play releases a manual hold/gate, or resumes a paused show.
+func (e *Engine) Play() { e.send(command{kind: cmdPlay}) }
+
+// Pause freezes playback mid-item; the stream stays live with silence.
+func (e *Engine) Pause() { e.send(command{kind: cmdPause}) }
+
+// Prev restarts the previous item (or the first item) from its beginning.
+func (e *Engine) Prev() { e.send(command{kind: cmdPrev}) }
+
+// RestartItem restarts the current item from its beginning.
+func (e *Engine) RestartItem() { e.send(command{kind: cmdRestart}) }
+
+// JumpTo targets the item at index i. While actively playing it queues the
+// item as next (toggling off if already queued); while paused/holding/finished
+// it jumps there immediately.
+func (e *Engine) JumpTo(i int) { e.send(command{kind: cmdJump, index: i}) }
+
+// TogglePauseAfter arms/disarms the one-shot pause-after-current-item flag.
+func (e *Engine) TogglePauseAfter() { e.send(command{kind: cmdTogglePauseAfter}) }
+
+// SetItemAutoNext updates the auto-next flag of item i in the live show's
+// snapshot (both the UI copy and the player's copy).
+func (e *Engine) SetItemAutoNext(i int, on bool) {
+	e.mu.Lock()
+	if i >= 0 && i < len(e.showItems) {
+		e.showItems[i].AutoNext = on
+	}
+	e.mu.Unlock()
+	e.send(command{kind: cmdSetAutoNext, index: i, on: on})
+}
 
 func (e *Engine) send(c command) {
 	e.mu.Lock()
@@ -150,7 +223,7 @@ func (e *Engine) TriggerClip(pcmPath string, gain float64) error {
 
 // run is the single owner of playback state. vmix is passed in (rather than
 // read from e.vmix) so the hot loop never touches the shared field.
-func (e *Engine) run(enc *encoder, items []services.FlowItem, vmix *voiceMixer) {
+func (e *Engine) run(enc *encoder, items []services.FlowItem, vmix *voiceMixer, playlistID int64, startAt int) {
 	defer func() {
 		enc.Stop()
 		e.mu.Lock()
@@ -159,8 +232,12 @@ func (e *Engine) run(enc *encoder, items []services.FlowItem, vmix *voiceMixer) 
 		e.mu.Unlock()
 	}()
 
-	p := &player{items: items, ffmpegPath: e.cfg.FFmpegPath}
+	p := &player{items: items, ffmpegPath: e.cfg.FFmpegPath, idx: startAt, queued: -1}
 	p.loadItem()
+	// Begin cued-and-paused at 0:00 so nothing airs until the operator hits Play.
+	if !p.finished {
+		p.paused = true
+	}
 
 	start := time.Now()
 	lead := int64(sampleRate * 300 / 1000) // 300ms startup lead
@@ -169,15 +246,22 @@ func (e *Engine) run(enc *encoder, items []services.FlowItem, vmix *voiceMixer) 
 
 	publish := func() {
 		s := Status{
-			Running:      true,
-			Holding:      p.holding,
-			Finished:     p.finished,
-			ItemIndex:    p.idx,
-			TotalItems:   len(items),
-			NowPlaying:   p.nowPlayingDesc(),
-			NextUp:       p.nextUpDesc(),
-			ElapsedSec:   time.Since(start).Seconds(),
-			ActiveVoices: vmix.active(),
+			Running:         true,
+			Holding:         p.holding,
+			Paused:          p.paused,
+			Finished:        p.finished,
+			PauseAfterArmed: p.pauseAfter,
+			ItemIndex:       p.idx,
+			QueuedIndex:     p.queued,
+			TotalItems:      len(items),
+			PlaylistID:      playlistID,
+			NowPlaying:      p.nowPlayingDesc(),
+			NextUp:          p.nextUpDesc(),
+			ElapsedSec:      time.Since(start).Seconds(),
+			ItemElapsedSec:  p.itemElapsedSec(),
+			ItemDurationSec: p.itemDurationSec(),
+			ActiveVoices:    vmix.active(),
+			Played:          p.playedCopy(),
 		}
 		e.setStatus(s)
 
@@ -204,13 +288,37 @@ func (e *Engine) run(enc *encoder, items []services.FlowItem, vmix *voiceMixer) 
 					log.Printf("playout: stop — fed %.2fs of audio in %.2fs wall (ratio %.3f)",
 						float64(written)/sampleRate, time.Since(start).Seconds(),
 						(float64(written)/sampleRate)/time.Since(start).Seconds())
-					e.setStatus(Status{Running: false})
-					e.broadcast(Status{Running: false})
+					// Keep position info so the UI can offer "continue from here".
+					s := Status{ItemIndex: p.idx, TotalItems: len(items), PlaylistID: playlistID}
+					e.setStatus(s)
+					e.broadcast(s)
 					return
 				case cmdSkip:
 					p.skip()
 				case cmdPlay:
-					p.release()
+					if p.paused {
+						p.paused = false
+					} else {
+						p.release()
+					}
+				case cmdPause:
+					p.pause()
+				case cmdJump:
+					if p.paused || p.holding || p.finished {
+						p.jumpTo(c.index)
+					} else {
+						p.queueNext(c.index)
+					}
+				case cmdPrev:
+					p.jumpTo(p.idx - 1)
+				case cmdRestart:
+					p.jumpTo(p.idx)
+				case cmdTogglePauseAfter:
+					p.pauseAfter = !p.pauseAfter
+				case cmdSetAutoNext:
+					if c.index >= 0 && c.index < len(p.items) {
+						p.items[c.index].AutoNext = c.on
+					}
 				}
 			default:
 				drained = true

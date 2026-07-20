@@ -40,7 +40,7 @@
                             <button class="btn btn-sm btn-outline" type="submit">Rename</button>
                         </form>
                         <div class="builder-meta">
-                            <span class="muted">Est. runtime: <strong>{{fmtDuration .Extra.RuntimeSec}}</strong></span>
+                            <span class="muted">Est. runtime: <strong id="flow-runtime">{{fmtDuration .Extra.RuntimeSec}}</strong></span>
                             <a class="btn btn-sm btn-primary" href="/stream?play={{$pl.ID}}">Go to Stream →</a>
                             <form method="POST" action="/api/flow/delete" onsubmit="return confirm('Delete this show?')">
                                 <input type="hidden" name="id" value="{{$pl.ID}}">
@@ -49,76 +49,54 @@
                         </div>
                     </div>
 
+                    <!-- Bulk add songs -->
+                    <div class="bulk-upload">
+                        <h3>Bulk add songs</h3>
+                        <p class="muted">Upload multiple files at once — each song is appended to the rundown using the options below.</p>
+                        <form id="bulk-form" enctype="multipart/form-data" class="bulk-form">
+                            <input type="hidden" name="playlist_id" value="{{$pl.ID}}">
+                            <input type="file" name="files" accept="audio/*" multiple required>
+                            <label class="bulk-spacing">Start
+                                <select name="start_mode" title="Auto: songs play through. Manual: playback holds before each song until you press play.">
+                                    <option value="auto" selected>Auto-continue</option>
+                                    <option value="manual">Manual start</option>
+                                </select>
+                            </label>
+                            <label class="bulk-spacing">
+                                <input type="checkbox" name="with_breaks" data-bind:withbreaks checked>
+                                Breaks
+                            </label>
+                            <label class="bulk-spacing">Spacing (s)
+                                <input type="number" name="break_sec" value="{{$pl.DefaultBreakSec}}" min="0" max="3600"
+                                       data-attr:disabled="!$withbreaks">
+                            </label>
+                            <button type="button" class="btn btn-sm btn-primary"
+                                    data-indicator:bulkbusy
+                                    data-attr:disabled="$bulkbusy"
+                                    data-on:click="@post('/api/flow/bulk-upload', {contentType: 'form'})">
+                                Upload &amp; add to rundown
+                            </button>
+                            <span data-show="$bulkbusy" class="muted">Uploading…</span>
+                        </form>
+                        <div id="bulk-log" class="import-log"></div>
+                    </div>
+
                     <!-- Flow items -->
-                    <ol class="flow-list">
-                        {{range $i, $it := .Extra.Items}}
-                        <li class="flow-item flow-{{$it.Type}}">
-                            <span class="flow-pos">{{add $i 1}}</span>
-                            <span class="flow-desc">
-                                {{if eq $it.Type "song"}}
-                                    {{if $it.Track}}🎵 {{if $it.Track.Artist}}{{$it.Track.Artist}} — {{end}}{{$it.Track.Title}}{{else}}🎵 (missing track){{end}}
-                                {{else if eq $it.Type "break"}}
-                                    ⏲ Break — {{$it.BreakSec}}s
-                                {{else}}
-                                    ⏸ {{if $it.Label}}Hold: {{$it.Label}}{{else}}Manual hold{{end}}
-                                {{end}}
-                            </span>
-                            <span class="flow-flags">
-                                {{if ne $it.Type "gate"}}
-                                <form method="POST" action="/api/flow/item/autonext" class="inline">
-                                    <input type="hidden" name="playlist_id" value="{{$pl.ID}}">
-                                    <input type="hidden" name="id" value="{{$it.ID}}">
-                                    <input type="hidden" name="auto_next" value="{{if $it.AutoNext}}off{{else}}on{{end}}">
-                                    <button class="chip {{if $it.AutoNext}}chip-on{{end}}" type="submit"
-                                            title="Toggle auto-continue">
-                                        {{if $it.AutoNext}}auto-next{{else}}hold after{{end}}
-                                    </button>
-                                </form>
-                                {{end}}
-                            </span>
-                            <span class="flow-actions">
-                                <form method="POST" action="/api/flow/item/move" class="inline">
-                                    <input type="hidden" name="playlist_id" value="{{$pl.ID}}">
-                                    <input type="hidden" name="id" value="{{$it.ID}}">
-                                    <input type="hidden" name="dir" value="up">
-                                    <button class="btn btn-sm btn-outline" type="submit">↑</button>
-                                </form>
-                                <form method="POST" action="/api/flow/item/move" class="inline">
-                                    <input type="hidden" name="playlist_id" value="{{$pl.ID}}">
-                                    <input type="hidden" name="id" value="{{$it.ID}}">
-                                    <input type="hidden" name="dir" value="down">
-                                    <button class="btn btn-sm btn-outline" type="submit">↓</button>
-                                </form>
-                                <form method="POST" action="/api/flow/item/delete" class="inline">
-                                    <input type="hidden" name="playlist_id" value="{{$pl.ID}}">
-                                    <input type="hidden" name="id" value="{{$it.ID}}">
-                                    <button class="btn btn-sm btn-danger" type="submit">✕</button>
-                                </form>
-                            </span>
-                        </li>
-                        {{else}}
-                        <li class="empty">No items yet — add songs, breaks, or holds below.</li>
-                        {{end}}
-                    </ol>
+                    {{template "flow-rundown" .Extra.Rundown}}
 
                     <!-- Add item -->
                     <div class="add-row">
                         <form method="POST" action="/api/flow/item/add" class="add-form">
                             <input type="hidden" name="playlist_id" value="{{$pl.ID}}">
                             <input type="hidden" name="type" value="song">
-                            <select name="track_id" required>
-                                <option value="" disabled selected>Add a song…</option>
-                                {{range .Extra.Tracks}}
-                                <option value="{{.ID}}">{{if .Artist}}{{.Artist}} — {{end}}{{.Title}}</option>
-                                {{end}}
-                            </select>
+                            {{template "flow-song-select" .Extra}}
                             <button class="btn btn-sm btn-primary" type="submit">+ Song</button>
                         </form>
 
                         <form method="POST" action="/api/flow/item/add" class="add-form">
                             <input type="hidden" name="playlist_id" value="{{$pl.ID}}">
                             <input type="hidden" name="type" value="break">
-                            <input type="number" name="break_sec" value="20" min="1" max="3600">
+                            <input type="number" name="break_sec" value="{{$pl.DefaultBreakSec}}" min="1" max="3600">
                             <button class="btn btn-sm btn-primary" type="submit">+ Break (s)</button>
                         </form>
 
@@ -136,6 +114,8 @@
             </div>
         </main>
     </div>
+    <script defer src="/static/vendor/sortable.min.js"></script>
+    <script defer src="/static/flow-dnd.js"></script>
 </body>
 </html>
 {{end}}
