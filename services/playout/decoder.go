@@ -10,9 +10,10 @@ import (
 // 48k/stereo/s16le PCM, feeding a ring buffer. Decoupling decode from the mix
 // tick (via the ring) means decode jitter never stalls the stream.
 type decoder struct {
-	cmd  *exec.Cmd
-	ring *RingBuffer
-	done chan struct{}
+	cmd   *exec.Cmd
+	ring  *RingBuffer
+	done  chan struct{}
+	abort chan struct{} // closed by Stop; unblocks a reader stuck on a full ring
 }
 
 // startDecoder spawns the ffmpeg decoder for filePath. ringSize bytes of
@@ -30,7 +31,7 @@ func startDecoder(ffmpegPath, filePath string, ringSize int) (*decoder, error) {
 		return nil, err
 	}
 
-	d := &decoder{cmd: cmd, ring: NewRingBuffer(ringSize), done: make(chan struct{})}
+	d := &decoder{cmd: cmd, ring: NewRingBuffer(ringSize), done: make(chan struct{}), abort: make(chan struct{})}
 
 	go func() {
 		defer close(d.done)
@@ -45,7 +46,11 @@ func startDecoder(ffmpegPath, filePath string, ringSize int) (*decoder, error) {
 					w := d.ring.Write(buf[written:n])
 					written += w
 					if written < n {
-						time.Sleep(5 * time.Millisecond)
+						select {
+						case <-d.abort:
+							return // Stop called; no one will drain the ring
+						case <-time.After(5 * time.Millisecond):
+						}
 					}
 				}
 			}
@@ -69,6 +74,7 @@ func (d *decoder) Finished() bool { return d.ring.Drained() }
 
 // Stop kills the ffmpeg process (used on skip/stop) and reaps it.
 func (d *decoder) Stop() {
+	close(d.abort)
 	if d.cmd != nil && d.cmd.Process != nil {
 		_ = d.cmd.Process.Kill()
 	}

@@ -93,7 +93,7 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 		"-c:v", "libx264", "-preset", "veryfast", "-tune", "stillimage",
 		"-pix_fmt", "yuv420p", "-r", itoa(c.FPS), "-g", itoa(gop),
 		"-c:a", "aac", "-b:a", c.AudioBitrate, "-ar", "48000", "-ac", "2",
-		"-vsync", "cfr", "-af", "aresample=async=1:first_pts=0",
+		"-fps_mode", "cfr", "-af", "aresample=async=1:first_pts=0",
 		// -shortest: the looping video never EOFs on its own, so tie output
 		// length to the audio pipe. Closing stdin then ends the stream cleanly
 		// (finalizing the FLV trailer) instead of requiring a hard kill.
