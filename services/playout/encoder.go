@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -32,7 +33,10 @@ type encoderConfig struct {
 	Width        int
 	Height       int
 	FPS          int
+	VideoEnabled bool   // false = audio-only stream, no video track
+	VideoBitrate string // CBR rate; empty = auto (CRF)
 	AudioBitrate string
+	NowOverlay   bool // draw the "now playing" text overlay
 }
 
 // startEncoder launches the persistent ffmpeg and returns it with stdin open.
@@ -66,37 +70,54 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 		"-f", "s16le", "-ar", "48000", "-ac", "2", "-i", "pipe:0",
 	}
 
-	// Video input: looping still image if present, else a flat color source.
-	if c.BgImagePath != "" {
-		if _, err := os.Stat(c.BgImagePath); err == nil {
-			args = append(args, "-loop", "1", "-framerate", itoa(c.FPS), "-i", c.BgImagePath)
+	if c.VideoEnabled {
+		// Video input: looping still image if present, else a flat color source.
+		if c.BgImagePath != "" {
+			if _, err := os.Stat(c.BgImagePath); err == nil {
+				args = append(args, "-loop", "1", "-framerate", itoa(c.FPS), "-i", c.BgImagePath)
+			} else {
+				args = append(args, colorInput(c)...)
+			}
 		} else {
 			args = append(args, colorInput(c)...)
 		}
-	} else {
-		args = append(args, colorInput(c)...)
+
+		chain := ""
+		if c.NowOverlay {
+			drawtext := "drawtext="
+			if c.FontFile != "" {
+				drawtext += "fontfile=" + escapeFilterPath(c.FontFile) + ":"
+			}
+			drawtext += "textfile=" + escapeFilterPath(c.NowTxtPath) +
+				":reload=1:expansion=none:x=(w-text_w)/2:y=h-120:fontsize=40:fontcolor=white:box=1:boxcolor=black@0.5:boxborderw=12"
+			chain = drawtext + ","
+		}
+
+		filter := fmt.Sprintf("[1:v]%sscale=%d:%d,format=yuv420p,fps=%d[v]", chain, c.Width, c.Height, c.FPS)
+
+		gop := c.FPS * 2
+		args = append(args,
+			"-filter_complex", filter,
+			"-map", "[v]", "-map", "0:a",
+			"-c:v", "libx264", "-preset", "veryfast", "-tune", "stillimage",
+			"-pix_fmt", "yuv420p", "-r", itoa(c.FPS), "-g", itoa(gop),
+			"-fps_mode", "cfr",
+		)
+		if c.VideoBitrate != "" {
+			// CBR (min=max=target + HRD filler): the video is just a "signal
+			// present" still, so a steady low rate beats quality-driven spikes.
+			args = append(args, "-b:v", c.VideoBitrate, "-minrate", c.VideoBitrate, "-maxrate", c.VideoBitrate,
+				"-bufsize", doubleRate(c.VideoBitrate), "-x264-params", "nal-hrd=cbr")
+		}
 	}
 
-	drawtext := "drawtext="
-	if c.FontFile != "" {
-		drawtext += "fontfile=" + escapeFilterPath(c.FontFile) + ":"
-	}
-	drawtext += "textfile=" + escapeFilterPath(c.NowTxtPath) +
-		":reload=1:expansion=none:x=(w-text_w)/2:y=h-120:fontsize=40:fontcolor=white:box=1:boxcolor=black@0.5:boxborderw=12"
-
-	filter := fmt.Sprintf("[1:v]%s,scale=%d:%d,format=yuv420p,fps=%d[v]", drawtext, c.Width, c.Height, c.FPS)
-
-	gop := c.FPS * 2
 	args = append(args,
-		"-filter_complex", filter,
-		"-map", "[v]", "-map", "0:a",
-		"-c:v", "libx264", "-preset", "veryfast", "-tune", "stillimage",
-		"-pix_fmt", "yuv420p", "-r", itoa(c.FPS), "-g", itoa(gop),
 		"-c:a", "aac", "-b:a", c.AudioBitrate, "-ar", "48000", "-ac", "2",
-		"-fps_mode", "cfr", "-af", "aresample=async=1:first_pts=0",
+		"-af", "aresample=async=1:first_pts=0",
 		// -shortest: the looping video never EOFs on its own, so tie output
 		// length to the audio pipe. Closing stdin then ends the stream cleanly
 		// (finalizing the FLV trailer) instead of requiring a hard kill.
+		// (No-op in audio-only mode, where stdin is the only input.)
 		"-shortest",
 		"-f", "flv", c.RTMPURL,
 	)
@@ -193,3 +214,21 @@ func findFont() string {
 }
 
 func itoa(n int) string { return fmt.Sprintf("%d", n) }
+
+// doubleRate returns twice an ffmpeg bitrate ("2500k" → "5000k") for -bufsize.
+// Unparseable rates fall back unchanged, which ffmpeg treats as a 1x buffer.
+func doubleRate(rate string) string {
+	num, suffix := rate, ""
+	if len(num) > 0 {
+		switch num[len(num)-1] {
+		case 'k', 'K', 'm', 'M':
+			suffix = string(num[len(num)-1])
+			num = num[:len(num)-1]
+		}
+	}
+	v, err := strconv.ParseFloat(num, 64)
+	if err != nil {
+		return rate
+	}
+	return strconv.FormatFloat(v*2, 'f', -1, 64) + suffix
+}

@@ -122,6 +122,7 @@ func (app *App) SaveSettings(w http.ResponseWriter, r *http.Request) {
 	if fps <= 0 {
 		fps = 10
 	}
+	vw, vh := parseVideoSize(r.FormValue("video_size"), r.FormValue("video_size_custom"))
 	bgPath := r.FormValue("bg_image_path")
 	if file, hdr, err := r.FormFile("bg_image_file"); err == nil {
 		defer file.Close()
@@ -137,7 +138,12 @@ func (app *App) SaveSettings(w http.ResponseWriter, r *http.Request) {
 		StreamKey:    r.FormValue("stream_key"),
 		BgImagePath:  bgPath,
 		VideoFPS:     fps,
+		VideoWidth:   vw,
+		VideoHeight:  vh,
+		VideoEnabled: r.FormValue("video_enabled") != "",
+		VideoBitrate: strings.TrimSpace(r.FormValue("video_bitrate")),
 		AudioBitrate: r.FormValue("audio_bitrate"),
+		NowOverlay:   r.FormValue("now_overlay") != "",
 		Theme:        r.FormValue("theme"),
 	}
 	if !IsValidTheme(st.Theme) {
@@ -148,6 +154,37 @@ func (app *App) SaveSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/settings", http.StatusSeeOther)
+}
+
+// BgPreview serves the currently configured background image so the settings
+// page can show a preview. The path comes from the (admin-edited) settings row,
+// never from the request.
+func (app *App) BgPreview(w http.ResponseWriter, r *http.Request) {
+	st, _ := app.Settings.Get()
+	if st.BgImagePath == "" {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	http.ServeFile(w, r, st.BgImagePath)
+}
+
+// parseVideoSize resolves the resolution form fields ("WxH" preset value, or
+// the free-text field when the preset is "custom") into even width/height —
+// yuv420p requires even dimensions. Unparseable input falls back to 720p.
+func parseVideoSize(sel, custom string) (int, int) {
+	if sel == "custom" {
+		sel = custom
+	}
+	parts := strings.SplitN(strings.ToLower(strings.TrimSpace(sel)), "x", 2)
+	if len(parts) == 2 {
+		w, errW := strconv.Atoi(strings.TrimSpace(parts[0]))
+		h, errH := strconv.Atoi(strings.TrimSpace(parts[1]))
+		if errW == nil && errH == nil && w > 0 && h > 0 {
+			return w &^ 1, h &^ 1
+		}
+	}
+	return 1280, 720
 }
 
 // saveBackground stores an uploaded background image in the assets directory

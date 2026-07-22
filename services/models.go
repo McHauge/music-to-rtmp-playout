@@ -67,7 +67,12 @@ type Settings struct {
 	StreamKey    string
 	BgImagePath  string
 	VideoFPS     int
+	VideoWidth   int
+	VideoHeight  int
+	VideoEnabled bool   // false = audio-only stream, no video track
+	VideoBitrate string // CBR rate; empty = auto (CRF)
 	AudioBitrate string
+	NowOverlay   bool // show the "now playing" drawtext overlay
 	Theme        string
 }
 

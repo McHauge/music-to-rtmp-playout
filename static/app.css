@@ -68,6 +68,20 @@ select option { background: #0a1628; }
 .field input, .field select { width: 100%; }
 .field-row { display: flex; gap: 1rem; }
 .field-row .field { flex: 1; }
+.input-reveal { position: relative; display: flex; }
+.input-reveal input { flex: 1; padding-right: 2.4rem; }
+.reveal-btn { position: absolute; right: 0.25rem; top: 50%; transform: translateY(-50%); background: none; border: none; color: rgba(255,255,255,0.55); cursor: pointer; font-size: 0.95rem; padding: 0.25rem 0.4rem; border-radius: 0.4rem; }
+.reveal-btn:hover { color: #fff; background: rgba(255,255,255,0.08); }
+.check-field { flex-direction: row; align-items: center; gap: 0.6rem; cursor: pointer; }
+/* Checkbox rendered as a slide toggle */
+.check-field input { appearance: none; flex: none; width: 2.4rem; height: 1.3rem; margin: 0; padding: 0; border: none; border-radius: 999px; background: rgba(255,255,255,0.22); position: relative; cursor: pointer; transition: background 0.18s ease; }
+.check-field input::after { content: ''; position: absolute; top: 0.15rem; left: 0.15rem; width: 1rem; height: 1rem; border-radius: 50%; background: #fff; transition: transform 0.18s ease; }
+.check-field input:checked { background: var(--accent); }
+.check-field input:checked::after { transform: translateX(1.1rem); }
+.check-field input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.bg-preview { align-items: center; }
+.bg-preview > span:first-child { align-self: flex-start; }
+.bg-preview img { max-width: 320px; max-height: 180px; width: auto; object-fit: contain; border-radius: 0.5rem; border: 1px solid rgba(255,255,255,0.15); background: rgba(0,0,0,0.25); }
 
 /* Login */
 .login-wrap { position: relative; z-index: 10; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 1rem; }
@@ -121,7 +135,13 @@ select option { background: #0a1628; }
 .bulk-upload h3 { margin: 0 0 0.3rem; font-size: 0.95rem; }
 .bulk-form { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
 .bulk-spacing { display: flex; gap: 0.4rem; align-items: center; font-size: 0.8rem; color: rgba(255,255,255,0.6); white-space: nowrap; }
-.bulk-spacing input { width: 4.5rem; }
+.bulk-spacing input[type="number"] { width: 4.5rem; }
+.bulk-source-row { flex-basis: 100%; display: flex; gap: 0.5rem; align-items: center; }
+.bulk-source-row input { flex: 1; min-width: 0; }
+.bulk-tabs { display: inline-flex; gap: 0.15rem; background: rgba(0,0,0,0.3); border-radius: 0.6rem; padding: 0.18rem; flex-shrink: 0; }
+.bulk-tab { border: none; background: transparent; color: rgba(255,255,255,0.55); padding: 0.32rem 0.75rem; border-radius: 0.45rem; font-size: 0.78rem; font-weight: 600; font-family: inherit; cursor: pointer; transition: all 0.2s; white-space: nowrap; }
+.bulk-tab:hover { color: #fff; }
+.bulk-tab.active { background: linear-gradient(135deg, var(--accent), var(--accent-darker)); color: #fff; }
 .flow-desc { flex: 1; font-size: 0.88rem; }
 .flow-total { display: block; padding: 0.6rem 0.2rem 0.1rem; margin-top: 0.2rem; background: transparent; border-left: none; border-top: 1px solid rgba(255,255,255,0.08); border-radius: 0; font-size: 0.82rem; font-variant-numeric: tabular-nums; }
 .rundown-total-line { display: flex; justify-content: space-between; gap: 0.6rem; color: rgba(255,255,255,0.7); }
@@ -167,6 +187,7 @@ select option { background: #0a1628; }
 .clip-del { position: absolute; top: 4px; right: 4px; padding: 0.1rem 0.4rem; }
 
 /* Settings */
+.page-narrow { max-width: 650px; }
 .settings-card { max-width: 600px; }
 .settings-form h2 { margin-top: 1.2rem; padding-top: 0.8rem; border-top: 1px solid rgba(255,255,255,0.08); }
 .settings-form h2:first-of-type { border-top: none; padding-top: 0; margin-top: 0; }

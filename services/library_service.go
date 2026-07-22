@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -111,12 +112,14 @@ func (s *LibraryService) AddUpload(origName string, src io.Reader) (*Track, erro
 // ImportYouTube downloads audio (and a playlist's worth, if the URL is a
 // playlist) via yt-dlp, then imports each resulting file. progress, if
 // non-nil, receives yt-dlp's stdout/stderr lines for live UI feedback.
-func (s *LibraryService) ImportYouTube(url string, progress func(line string)) (int, error) {
+// Returns the tracks the URL resolved to in playlist order, including ones
+// that were already in the library.
+func (s *LibraryService) ImportYouTube(url string, progress func(line string)) ([]Track, error) {
 	if strings.TrimSpace(url) == "" {
-		return 0, fmt.Errorf("empty URL")
+		return nil, fmt.Errorf("empty URL")
 	}
 	if err := os.MkdirAll(s.mediaDir, 0o755); err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	outTmpl := filepath.Join(s.mediaDir, "%(id)s.%(ext)s")
@@ -131,7 +134,7 @@ func (s *LibraryService) ImportYouTube(url string, progress func(line string)) (
 	stdout, _ := cmd.StdoutPipe()
 	cmd.Stderr = cmd.Stdout
 	if err := cmd.Start(); err != nil {
-		return 0, fmt.Errorf("yt-dlp start failed (is it installed?): %w", err)
+		return nil, fmt.Errorf("yt-dlp start failed (is it installed?): %w", err)
 	}
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
@@ -151,33 +154,66 @@ func (s *LibraryService) ImportYouTube(url string, progress func(line string)) (
 	return s.importInfoJSONs(progress)
 }
 
-// importInfoJSONs scans the media dir for *.info.json written by yt-dlp,
-// inserting any tracks not already present (deduped by file path).
-func (s *LibraryService) importInfoJSONs(progress func(string)) (int, error) {
+// importInfoJSONs scans the media dir for *.info.json written by yt-dlp and
+// resolves each to a track — inserting new ones, reusing existing rows (deduped
+// by file path) — returned in playlist order (playlist_index ascending; entries
+// without an index, i.e. single videos, come last in filename order).
+func (s *LibraryService) importInfoJSONs(progress func(string)) ([]Track, error) {
+	type ytInfo struct {
+		ID            string  `json:"id"`
+		Title         string  `json:"title"`
+		Artist        string  `json:"artist"`
+		Uploader      string  `json:"uploader"`
+		Duration      float64 `json:"duration"`
+		PlaylistIndex *int    `json:"playlist_index"` // null for single videos
+	}
+	type entry struct {
+		info     ytInfo
+		jsonPath string
+	}
+
 	matches, _ := filepath.Glob(filepath.Join(s.mediaDir, "*.info.json"))
-	added := 0
+	var entries []entry
 	for _, infoPath := range matches {
 		raw, err := os.ReadFile(infoPath)
 		if err != nil {
 			continue
 		}
-		var info struct {
-			ID       string  `json:"id"`
-			Title    string  `json:"title"`
-			Artist   string  `json:"artist"`
-			Uploader string  `json:"uploader"`
-			Duration float64 `json:"duration"`
-		}
+		var info ytInfo
 		if err := json.Unmarshal(raw, &info); err != nil {
 			continue
 		}
+		entries = append(entries, entry{info: info, jsonPath: infoPath})
+	}
+
+	sort.SliceStable(entries, func(i, j int) bool {
+		a, b := entries[i].info.PlaylistIndex, entries[j].info.PlaylistIndex
+		switch {
+		case a != nil && b != nil:
+			return *a < *b
+		case a != nil:
+			return true
+		case b != nil:
+			return false
+		default:
+			return entries[i].jsonPath < entries[j].jsonPath
+		}
+	})
+
+	var out []Track
+	for _, e := range entries {
+		info := e.info
 		audioPath := filepath.Join(s.mediaDir, info.ID+".mp3")
 		if _, err := os.Stat(audioPath); err != nil {
-			_ = os.Remove(infoPath)
+			_ = os.Remove(e.jsonPath)
 			continue
 		}
-		if s.trackExists(audioPath) {
-			_ = os.Remove(infoPath)
+		if existing, _ := s.trackByPath(audioPath); existing != nil {
+			out = append(out, *existing)
+			if progress != nil {
+				progress("already in library: " + existing.Title)
+			}
+			_ = os.Remove(e.jsonPath)
 			continue
 		}
 		artist := info.Artist
@@ -188,21 +224,30 @@ func (s *LibraryService) importInfoJSONs(progress func(string)) (int, error) {
 		if dur == 0 {
 			dur = s.probeDuration(audioPath)
 		}
-		if _, err := s.insertTrack(info.Title, artist, "youtube", audioPath, dur); err == nil {
-			added++
+		if t, err := s.insertTrack(info.Title, artist, "youtube", audioPath, dur); err == nil {
+			out = append(out, *t)
 			if progress != nil {
 				progress("imported: " + info.Title)
 			}
 		}
-		_ = os.Remove(infoPath) // tidy: metadata is now in the DB
+		_ = os.Remove(e.jsonPath) // tidy: metadata is now in the DB
 	}
-	return added, nil
+	return out, nil
 }
 
-func (s *LibraryService) trackExists(filePath string) bool {
-	var n int
-	_ = s.db.QueryRow(`SELECT COUNT(*) FROM tracks WHERE file_path = ?`, filePath).Scan(&n)
-	return n > 0
+// trackByPath returns the track whose file_path matches, or nil if none does.
+func (s *LibraryService) trackByPath(filePath string) (*Track, error) {
+	var t Track
+	err := s.db.QueryRow(`SELECT id, title, artist, source, file_path, duration_sec, added_at
+		FROM tracks WHERE file_path = ?`, filePath).
+		Scan(&t.ID, &t.Title, &t.Artist, &t.Source, &t.FilePath, &t.DurationSec, &t.AddedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
 }
 
 func (s *LibraryService) insertTrack(title, artist, source, filePath string, dur float64) (*Track, error) {

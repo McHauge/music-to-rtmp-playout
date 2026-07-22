@@ -12,14 +12,14 @@ func NewSettingsService(db *sql.DB) *SettingsService { return &SettingsService{d
 // Get returns the current settings row (always present — seeded at init).
 func (s *SettingsService) Get() (Settings, error) {
 	var st Settings
-	err := s.db.QueryRow(`SELECT rtmp_url, stream_key, bg_image_path, video_fps, audio_bitrate, theme FROM settings WHERE id = 1`).
-		Scan(&st.RTMPURL, &st.StreamKey, &st.BgImagePath, &st.VideoFPS, &st.AudioBitrate, &st.Theme)
+	err := s.db.QueryRow(`SELECT rtmp_url, stream_key, bg_image_path, video_fps, video_width, video_height, video_enabled, video_bitrate, audio_bitrate, now_overlay, theme FROM settings WHERE id = 1`).
+		Scan(&st.RTMPURL, &st.StreamKey, &st.BgImagePath, &st.VideoFPS, &st.VideoWidth, &st.VideoHeight, &st.VideoEnabled, &st.VideoBitrate, &st.AudioBitrate, &st.NowOverlay, &st.Theme)
 	return st, err
 }
 
 // Save persists the settings row.
 func (s *SettingsService) Save(st Settings) error {
-	_, err := s.db.Exec(`UPDATE settings SET rtmp_url=?, stream_key=?, bg_image_path=?, video_fps=?, audio_bitrate=?, theme=? WHERE id = 1`,
-		st.RTMPURL, st.StreamKey, st.BgImagePath, st.VideoFPS, st.AudioBitrate, st.Theme)
+	_, err := s.db.Exec(`UPDATE settings SET rtmp_url=?, stream_key=?, bg_image_path=?, video_fps=?, video_width=?, video_height=?, video_enabled=?, video_bitrate=?, audio_bitrate=?, now_overlay=?, theme=? WHERE id = 1`,
+		st.RTMPURL, st.StreamKey, st.BgImagePath, st.VideoFPS, st.VideoWidth, st.VideoHeight, st.VideoEnabled, st.VideoBitrate, st.AudioBitrate, st.NowOverlay, st.Theme)
 	return err
 }

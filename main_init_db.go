@@ -66,7 +66,12 @@ func initDB(db *sql.DB) error {
 			stream_key TEXT NOT NULL DEFAULT '',
 			bg_image_path TEXT NOT NULL DEFAULT '',
 			video_fps INTEGER NOT NULL DEFAULT 10,
+			video_width INTEGER NOT NULL DEFAULT 0,   -- 0 = backfilled from env config at startup
+			video_height INTEGER NOT NULL DEFAULT 0,
+			video_enabled INTEGER NOT NULL DEFAULT 1, -- bool: 0 = audio-only stream
+			video_bitrate TEXT NOT NULL DEFAULT '500k', -- CBR; empty = auto (CRF)
 			audio_bitrate TEXT NOT NULL DEFAULT '160k',
+			now_overlay INTEGER NOT NULL DEFAULT 1,   -- bool: "now playing" overlay
 			theme TEXT NOT NULL DEFAULT 'teal'
 		)`,
 		`INSERT OR IGNORE INTO settings (id) VALUES (1)`,
@@ -80,6 +85,21 @@ func initDB(db *sql.DB) error {
 
 	// Additive migrations for databases created before these columns existed.
 	if err := ensureColumn(db, "playlists", "default_break_sec INTEGER NOT NULL DEFAULT 20"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "settings", "video_width INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "settings", "video_height INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "settings", "video_enabled INTEGER NOT NULL DEFAULT 1"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "settings", "video_bitrate TEXT NOT NULL DEFAULT '500k'"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "settings", "now_overlay INTEGER NOT NULL DEFAULT 1"); err != nil {
 		return err
 	}
 

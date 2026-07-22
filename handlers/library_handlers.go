@@ -91,7 +91,7 @@ func (app *App) ImportYouTube(w http.ResponseWriter, r *http.Request) {
 	}
 	patch()
 
-	added, err := app.Library.ImportYouTube(url, func(line string) {
+	tracks, err := app.Library.ImportYouTube(url, func(line string) {
 		mu.Lock()
 		lines = append(lines, line)
 		mu.Unlock()
@@ -102,7 +102,7 @@ func (app *App) ImportYouTube(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		lines = append(lines, "Error: "+err.Error())
 	} else {
-		lines = append(lines, fmt.Sprintf("Done — imported %d track(s).", added))
+		lines = append(lines, fmt.Sprintf("Done — imported %d track(s).", len(tracks)))
 	}
 	mu.Unlock()
 	patch()

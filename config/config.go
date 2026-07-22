@@ -38,6 +38,7 @@ type Config struct {
 	VideoWidth   int
 	VideoHeight  int
 	VideoFPS     int
+	VideoBitrate string // CBR rate, e.g. "500k"; empty = auto (CRF)
 	AudioBitrate string // e.g. "160k"
 	BgImagePath  string // background still for the video track
 
@@ -78,6 +79,7 @@ func LoadConfig() *Config {
 		VideoWidth:   getEnvInt("VIDEO_WIDTH", 1280),
 		VideoHeight:  getEnvInt("VIDEO_HEIGHT", 720),
 		VideoFPS:     getEnvInt("VIDEO_FPS", 10),
+		VideoBitrate: getEnv("VIDEO_BITRATE", "500k"),
 		AudioBitrate: getEnv("AUDIO_BITRATE", "160k"),
 		BgImagePath:  getEnv("BG_IMAGE_PATH", "./assets/bg.png"),
 

@@ -43,8 +43,6 @@ type EngineConfig struct {
 	FFmpegPath string
 	NowTxtPath string
 	FontFile   string
-	Width      int
-	Height     int
 }
 
 // Engine owns the single live show. All playback state lives in the run
@@ -121,10 +119,13 @@ func (e *Engine) Start(items []services.FlowItem, set services.Settings, playlis
 		BgImagePath:  set.BgImagePath,
 		NowTxtPath:   e.cfg.NowTxtPath,
 		FontFile:     e.cfg.FontFile,
-		Width:        e.cfg.Width,
-		Height:       e.cfg.Height,
+		Width:        set.VideoWidth,
+		Height:       set.VideoHeight,
 		FPS:          set.VideoFPS,
+		VideoEnabled: set.VideoEnabled,
+		VideoBitrate: set.VideoBitrate,
 		AudioBitrate: set.AudioBitrate,
+		NowOverlay:   set.NowOverlay,
 	}
 	enc, err := startEncoder(encCfg)
 	if err != nil {

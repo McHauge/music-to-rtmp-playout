@@ -69,21 +69,30 @@ func main() {
 	soundboardSvc := services.NewSoundboardService(db, cfg.SoundboardDir, cfg.FFmpegPath)
 	settingsSvc := services.NewSettingsService(db)
 
-	// Seed settings from config defaults on first run (empty RTMP URL).
-	if st, err := settingsSvc.Get(); err == nil && st.RTMPURL == "" {
-		st.RTMPURL = cfg.RTMPURL
-		st.BgImagePath = cfg.BgImagePath
-		st.VideoFPS = cfg.VideoFPS
-		st.AudioBitrate = cfg.AudioBitrate
-		st.Theme = cfg.Theme
-		_ = settingsSvc.Save(st)
+	// Seed settings from config defaults on first run (empty RTMP URL). The
+	// resolution backfill also covers DBs migrated from before it was a setting.
+	if st, err := settingsSvc.Get(); err == nil {
+		seed := st.RTMPURL == ""
+		if seed {
+			st.RTMPURL = cfg.RTMPURL
+			st.BgImagePath = cfg.BgImagePath
+			st.VideoFPS = cfg.VideoFPS
+			st.VideoBitrate = cfg.VideoBitrate
+			st.AudioBitrate = cfg.AudioBitrate
+			st.Theme = cfg.Theme
+		}
+		if st.VideoWidth <= 0 || st.VideoHeight <= 0 {
+			st.VideoWidth, st.VideoHeight = cfg.VideoWidth, cfg.VideoHeight
+			seed = true
+		}
+		if seed {
+			_ = settingsSvc.Save(st)
+		}
 	}
 
 	engine := playout.NewEngine(playout.EngineConfig{
 		FFmpegPath: cfg.FFmpegPath,
 		NowTxtPath: filepath.Join(cfg.AssetsDir, "now.txt"),
-		Width:      cfg.VideoWidth,
-		Height:     cfg.VideoHeight,
 	})
 
 	tmpl, err := handlers.LoadTemplates("./templates")
@@ -130,6 +139,7 @@ func main() {
 	r.HandleFunc("/api/flow/item/autonext", app.RequireAuth(app.ToggleAutoNext)).Methods("POST")
 	r.HandleFunc("/api/flow/reorder", app.RequireAuth(app.ReorderItems)).Methods("POST")
 	r.HandleFunc("/api/flow/bulk-upload", app.RequireAuth(app.BulkUploadToFlow)).Methods("POST")
+	r.HandleFunc("/api/flow/import-youtube", app.RequireAuth(app.ImportYouTubeToFlow)).Methods("POST")
 
 	// Soundboard API.
 	r.HandleFunc("/api/soundboard/upload", app.RequireAuth(app.UploadClip)).Methods("POST")
@@ -152,6 +162,7 @@ func main() {
 
 	// Settings.
 	r.HandleFunc("/api/settings/save", app.RequireAuth(app.SaveSettings)).Methods("POST")
+	r.HandleFunc("/api/settings/bg-preview", app.RequireAuth(app.BgPreview)).Methods("GET")
 
 	// Static assets.
 	r.PathPrefix("/static/").Handler(http.StripPrefix("/static/", http.FileServer(http.Dir("./static"))))
