@@ -35,8 +35,8 @@ RUN set -eux; \
     rm -f ffmpeg.tar.xz mediamtx.tar.gz; \
     rm -rf ffmpeg-*
 
-# ---- Runtime stage ----
-FROM debian:bookworm-slim
+# ---- Runtime base: app + vendored media tools, no relay ----
+FROM debian:bookworm-slim AS base
 WORKDIR /app
 
 # Only runtime needs: fonts for drawtext, tini for reaping decoder zombies,
@@ -53,19 +53,32 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Vendored, self-contained tools live in /app/bin (BIN_DIR).
 COPY --from=tools /tools/ffmpeg /tools/ffprobe /tools/yt-dlp /app/bin/
-COPY --from=tools /tools/mediamtx /usr/local/bin/mediamtx
 
 COPY --from=builder /app/playout .
 COPY templates ./templates
 COPY static ./static
-COPY mediamtx.yml ./mediamtx.yml
-COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh /app/bin/* \
+RUN chmod +x /app/bin/* \
     && mkdir -p /app/data /app/media /app/soundboard /app/assets
 
 ENV BIN_DIR=/app/bin \
     RTMP_URL=rtmp://localhost:1935/live/show
 
-EXPOSE 8080 1935 8888
+EXPOSE 8080
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/app/playout"]
+
+# ---- Dev image (docker compose): adds the bundled MediaMTX relay ----
+FROM base AS dev
+COPY --from=tools /tools/mediamtx /usr/local/bin/mediamtx
+COPY mediamtx.yml ./mediamtx.yml
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+EXPOSE 1935 8888
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
+
+# ---- Production image (default target): no MediaMTX — push straight to an
+# external RTMP ingest via RTMP_URL. Last stage = what plain `docker build .`
+# produces. ----
+FROM base AS prod

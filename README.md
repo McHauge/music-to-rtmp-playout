@@ -38,7 +38,10 @@ upstream and reconnects silently on blips, so the program stream never drops.
 Audio is the master clock (`aresample=async=1` + CFR video) to bound A/V drift
 over long shows.
 
-## Run with Docker
+## Run with Docker (development)
+
+`docker compose` is the development setup: it builds the `dev` image target,
+which bundles a MediaMTX relay so you can watch the stream locally.
 
 ```bash
 cp .env.example .env       # set SESSION_SECRET, ADMIN_USERNAME/PASSWORD, etc.
@@ -52,10 +55,25 @@ The bundled MediaMTX accepts the encoder's feed at
 (`rtmp://<host>:1935/live/show` or HLS at `http://<host>:8888/live/show`), or
 configure `mediamtx.yml` (`runOnReady`) to forward to an external RTMP ingest.
 
-To run **without** the bundled relay — pushing straight to an external RTMP
-ingest (Twitch, YouTube, your own server) — set `MEDIAMTX_ENABLED=false` in
-`.env` and point `RTMP_URL` at the ingest. Ports `1935`/`8888` are unused in
-this mode.
+## Deploy to production
+
+The default Dockerfile target is the production image: app + ffmpeg/yt-dlp
+only, **no MediaMTX** — it pushes straight to an external RTMP ingest (Twitch,
+YouTube, your own relay) via `RTMP_URL`.
+
+```bash
+docker build -t playout .
+docker run -d --name playout --restart unless-stopped \
+  -p 8080:8080 \
+  -e SESSION_SECRET=<random> \
+  -e RTMP_URL=rtmp://your-ingest/live/streamkey \
+  -v ./data:/app/data -v ./media:/app/media \
+  -v ./soundboard:/app/soundboard -v ./assets:/app/assets \
+  playout
+```
+
+Only port `8080` (web UI) is exposed; put a TLS reverse proxy in front of it if
+the box is internet-facing. `RTMP_URL` is also editable later in Settings.
 
 ## Run locally (dev)
 

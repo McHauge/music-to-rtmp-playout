@@ -22,8 +22,10 @@ go build ./...     # compile-check everything
 go vet ./...       # static checks
 gofmt -w .         # format
 
-# Full container (app + MediaMTX relay): web 8080, RTMP 1935, HLS 8888
+# Dev container (app + MediaMTX relay, `dev` image target): web 8080, RTMP 1935, HLS 8888
 docker compose up --build
+# Production image (default target, no relay — pushes to an external ingest):
+docker build -t playout .
 ```
 
 There is no test suite in this repo. A live stream also needs an RTMP target — either the bundled MediaMTX (Docker) or any RTMP server pointed at by `RTMP_URL`.
@@ -59,4 +61,4 @@ Spotify playlist import (`spotify_service.go`) is metadata-only: `SpotifyService
 - **Handlers return HTML, never JSON** — render a `templates/partials/*.gohtml` fragment and `PatchElements` it over SSE. Add a template func in `handlers/template.go` rather than formatting in the handler.
 - **Don't touch engine playback state from handlers** — go through `Engine` methods (`Start/Stop/Skip/Play/TriggerClip`), which marshal onto the `run` goroutine via channels.
 - **Audio format is invariant** — 48k/stereo/s16le. Any new PCM source (soundboard, new item type) must produce this exact format or the mix math and encoder break.
-- The bundled Linux ffmpeg/yt-dlp/mediamtx are vendored into the Docker image at build time (`Dockerfile` tools stage); the container also runs MediaMTX alongside the app (`docker-entrypoint.sh`).
+- The bundled Linux ffmpeg/yt-dlp are vendored into the Docker image at build time (`Dockerfile` tools stage). The Dockerfile has two final targets: the default (production) image is app-only; the `dev` target (used by docker compose) adds MediaMTX and runs it alongside the app (`docker-entrypoint.sh`).

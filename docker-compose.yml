@@ -1,10 +1,15 @@
+# Development setup: builds the `dev` image target, which bundles the MediaMTX
+# relay so the stream can be viewed locally. Production uses the default image
+# target (no relay) — see README "Deploy to production".
 services:
   playout:
-    build: .
+    build:
+      context: .
+      target: dev
     ports:
       - "${PORT:-8080}:8080"   # web UI
-      - "1935:1935"            # RTMP (relay ingest + pull; only used when MEDIAMTX_ENABLED)
-      - "8888:8888"            # HLS (pull/playback; only used when MEDIAMTX_ENABLED)
+      - "1935:1935"            # RTMP (relay ingest + pull)
+      - "8888:8888"            # HLS (pull/playback)
     volumes:
       - ./data:/app/data
       - ./media:/app/media
@@ -17,13 +22,10 @@ services:
       - ADMIN_USERNAME=${ADMIN_USERNAME:-}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
       - RTMP_URL=${RTMP_URL:-rtmp://localhost:1935/live/show}
-      - MEDIAMTX_ENABLED=${MEDIAMTX_ENABLED:-true}
       - THEME=${THEME:-teal}
       - SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID:-}
       - SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET:-}
-    # Optional: a local .env is loaded when present (compose CLI), but its
-    # absence must not break stack deploys (Portainer etc. have no .env file —
-    # set variables in the stack UI instead).
+    # Optional: loaded when present, but its absence doesn't break the deploy.
     env_file:
       - path: .env
         required: false

@@ -1,0 +1,26 @@
+{
+    "name": "music-to-rtmp-playout",
+    "version": "0.1.0",
+    "license": "MIT",
+    "private": true,
+    "scripts": {
+        "wgo": "go generate && cross-env CLICOLOR_FORCE=1 LOG=ln wgo",
+        "air": "go generate && cross-env CLICOLOR_FORCE=1 LOG=ln air",
+        "test": "go generate && go run .",
+        "start": "go run .",
+        "tidy": "go mod tidy",
+        "generate": "go generate",
+        "docker_build": "go generate && docker build -t mchauge/music-to-rtmp-playout:stable .",
+        "docker_build_beta": "go generate && docker build -t mchauge/music-to-rtmp-playout:beta .",
+        "docker_push": "yarn docker_build && docker push mchauge/music-to-rtmp-playout:stable",
+        "docker_push_beta": "yarn docker_build_beta && docker push mchauge/music-to-rtmp-playout:beta"
+    },
+    "dependencies": {
+        "yarn": "^1.22.19"
+    },
+    "devDependencies": {
+        "nodemon": "^2.0.7",
+        "cross-env": "^7.0.3"
+    },
+    "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
+}
