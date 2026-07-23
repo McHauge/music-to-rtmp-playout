@@ -19,6 +19,12 @@ services:
       - RTMP_URL=${RTMP_URL:-rtmp://localhost:1935/live/show}
       - MEDIAMTX_ENABLED=${MEDIAMTX_ENABLED:-true}
       - THEME=${THEME:-teal}
+      - SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID:-}
+      - SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET:-}
+    # Optional: a local .env is loaded when present (compose CLI), but its
+    # absence must not break stack deploys (Portainer etc. have no .env file —
+    # set variables in the stack UI instead).
     env_file:
-      - .env
+      - path: .env
+        required: false
     restart: unless-stopped
