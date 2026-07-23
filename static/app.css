@@ -197,12 +197,14 @@ select option { background: #0a1628; }
 .start-row select { flex: 1; }
 
 /* Soundboard */
-.clip-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 0.75rem; }
-.clip { position: relative; }
-.clip-btn { width: 100%; padding: 1.2rem 0.5rem; border-radius: 0.7rem; border: 1px solid rgba(255,255,255,0.1); background: rgba(var(--accent-rgb),0.12); color: #fff; font-weight: 600; cursor: pointer; font-family: inherit; transition: all 0.15s; }
+.clip-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); grid-auto-rows: 1fr; gap: 0.75rem; }
+.clip { position: relative; display: flex; }
+.clip-btn { flex: 1; width: 100%; padding: 1.2rem 0.5rem; border-radius: 0.7rem; border: 1px solid rgba(255,255,255,0.1); background: rgba(var(--accent-rgb),0.12); color: #fff; font-weight: 600; cursor: pointer; font-family: inherit; transition: all 0.15s; }
 .clip-btn:hover { background: rgba(var(--accent-rgb),0.25); transform: translateY(-2px); }
 .clip-btn:active { transform: scale(0.97); }
 .clip-del { position: absolute; top: 4px; right: 4px; padding: 0.1rem 0.4rem; }
+.clip-preview { position: absolute; top: 4px; left: 4px; padding: 0.1rem 0.4rem; border: none; border-radius: 0.4rem; background: transparent; color: #fff; opacity: 0.45; cursor: pointer; font-family: inherit; }
+.clip-preview:hover, .clip-preview.active { opacity: 1; }
 
 /* Settings */
 .page-narrow { max-width: 650px; }

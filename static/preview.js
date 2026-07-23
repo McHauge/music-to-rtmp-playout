@@ -5,6 +5,7 @@
 
     var PLAY = '▶';  // ▶
     var PAUSE = '⏸'; // ⏸
+    var STOP = '⏹';  // ⏹ — shown instead of pause on buttons with data-stop
 
     // Re-asserts button state; also runs on timeupdate so icons self-heal
     // after Datastar re-patches the track list mid-playback.
@@ -12,7 +13,9 @@
         var current = audio.dataset.track || '';
         var playing = current !== '' && !audio.paused && !audio.ended;
         document.querySelectorAll('.preview-btn').forEach(function (b) {
-            b.textContent = (playing && b.dataset.track === current) ? PAUSE : PLAY;
+            var isCurrent = playing && b.dataset.track === current;
+            b.textContent = isCurrent ? ('stop' in b.dataset ? STOP : PAUSE) : PLAY;
+            b.classList.toggle('active', isCurrent);
         });
         document.querySelectorAll('.preview-fwd, .preview-stop').forEach(function (b) {
             b.classList.toggle('active', current !== '' && b.dataset.track === current);
@@ -21,13 +24,18 @@
 
     window.previewToggle = function (btn) {
         var id = btn.dataset.track;
+        var stopStyle = 'stop' in btn.dataset; // data-stop: stop & reset instead of pause/resume
         if (audio.dataset.track === id && !audio.paused) {
+            if (stopStyle) {
+                window.previewStop(btn);
+                return;
+            }
             audio.pause();
-        } else if (audio.dataset.track === id && !audio.ended && audio.currentTime > 0) {
+        } else if (!stopStyle && audio.dataset.track === id && !audio.ended && audio.currentTime > 0) {
             audio.play();
         } else {
             audio.dataset.track = id;
-            audio.src = '/api/library/preview?id=' + encodeURIComponent(id);
+            audio.src = btn.dataset.src || ('/api/library/preview?id=' + encodeURIComponent(id));
             audio.play();
         }
         refresh();

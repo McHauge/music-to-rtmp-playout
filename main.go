@@ -150,6 +150,7 @@ func main() {
 	r.HandleFunc("/api/soundboard/upload", app.RequireAuth(app.UploadClip)).Methods("POST")
 	r.HandleFunc("/api/soundboard/delete", app.RequireAuth(app.DeleteClip)).Methods("POST")
 	r.HandleFunc("/api/soundboard/trigger", app.RequireAuth(app.TriggerClip)).Methods("POST", "GET")
+	r.HandleFunc("/api/soundboard/preview", app.RequireAuth(app.PreviewClip)).Methods("GET")
 
 	// Stream control API.
 	r.HandleFunc("/api/stream/start", app.RequireAuth(app.StartStream)).Methods("POST", "GET")

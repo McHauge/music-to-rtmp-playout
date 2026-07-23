@@ -29,6 +29,9 @@
                         <button class="clip-btn" data-on:click="@post('/api/soundboard/trigger?id={{.ID}}')">
                             🔊 {{.Name}}
                         </button>
+                        <button class="clip-preview preview-btn" type="button" data-track="{{.ID}}" data-stop
+                                data-src="/api/soundboard/preview?id={{.ID}}"
+                                onclick="previewToggle(this)" title="Pre-listen">▶</button>
                         <form method="POST" action="/api/soundboard/delete" onsubmit="return confirm('Delete clip?')">
                             <input type="hidden" name="id" value="{{.ID}}">
                             <button class="clip-del btn btn-sm btn-danger" type="submit">✕</button>
@@ -41,6 +44,8 @@
             </section>
         </main>
     </div>
+    <audio id="preview-audio" preload="none"></audio>
+    <script defer src="/static/preview.js"></script>
 </body>
 </html>
 {{end}}
