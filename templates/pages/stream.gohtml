@@ -48,12 +48,23 @@
                 </section>
             </div>
 
-            <section class="card glass">
-                <h2>Rundown</h2>
-                {{template "stream-rundown" .Extra.Rundown}}
-            </section>
+            <div class="grid-rundown">
+                <section class="card glass">
+                    <h2>Rundown</h2>
+                    {{template "stream-rundown" .Extra.Rundown}}
+                </section>
+
+                <section class="card glass stream-soundboard-card">
+                    <h2>Soundboard</h2>
+                    <div class="stream-soundboard-scroll">
+                        {{template "stream-soundboard" .Extra.Clips}}
+                    </div>
+                </section>
+            </div>
         </main>
     </div>
+    <audio id="preview-audio" preload="none"></audio>
+    <script defer src="/static/preview.js"></script>
 </body>
 </html>
 {{end}}

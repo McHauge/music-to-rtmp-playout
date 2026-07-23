@@ -85,6 +85,7 @@ func (app *App) FlowPage(w http.ResponseWriter, r *http.Request) {
 func (app *App) StreamPage(w http.ResponseWriter, r *http.Request) {
 	playlists, _ := app.Flow.ListPlaylists()
 	st, _ := app.Settings.Get()
+	clips, _ := app.Soundboard.List()
 	status := app.Engine.Status()
 	running := status.Running
 
@@ -118,6 +119,7 @@ func (app *App) StreamPage(w http.ResponseWriter, r *http.Request) {
 			"PlayID":    playID,
 			"StartAt":   startAt,
 			"Rundown":   app.rundownData(playID),
+			"Clips":     clips,
 		},
 	})
 }

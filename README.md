@@ -52,6 +52,11 @@ The bundled MediaMTX accepts the encoder's feed at
 (`rtmp://<host>:1935/live/show` or HLS at `http://<host>:8888/live/show`), or
 configure `mediamtx.yml` (`runOnReady`) to forward to an external RTMP ingest.
 
+To run **without** the bundled relay — pushing straight to an external RTMP
+ingest (Twitch, YouTube, your own server) — set `MEDIAMTX_ENABLED=false` in
+`.env` and point `RTMP_URL` at the ingest. Ports `1935`/`8888` are unused in
+this mode.
+
 ## Run locally (dev)
 
 Requires Go 1.26+. **ffmpeg, ffprobe, and yt-dlp don't need to be installed** —

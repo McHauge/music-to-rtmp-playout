@@ -3,8 +3,8 @@ services:
     build: .
     ports:
       - "${PORT:-8080}:8080"   # web UI
-      - "1935:1935"            # RTMP (relay ingest + pull)
-      - "8888:8888"            # HLS (pull/playback)
+      - "1935:1935"            # RTMP (relay ingest + pull; only used when MEDIAMTX_ENABLED)
+      - "8888:8888"            # HLS (pull/playback; only used when MEDIAMTX_ENABLED)
     volumes:
       - ./data:/app/data
       - ./media:/app/media
@@ -17,6 +17,7 @@ services:
       - ADMIN_USERNAME=${ADMIN_USERNAME:-}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
       - RTMP_URL=${RTMP_URL:-rtmp://localhost:1935/live/show}
+      - MEDIAMTX_ENABLED=${MEDIAMTX_ENABLED:-true}
       - THEME=${THEME:-teal}
     env_file:
       - .env
