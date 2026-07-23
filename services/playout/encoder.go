@@ -43,6 +43,7 @@ type encoderConfig struct {
 	NowOverlay   bool   // draw the "now playing" lower-third banner
 	VizStyle     string // banner visualization: "bars" | "wave" | "none"
 	BannerBox    bool   // translucent box behind the banner
+	LowLatency   bool   // x264 low-latency tuning (no lookahead/B-frames, tight VBV)
 }
 
 // startEncoder launches the persistent ffmpeg and returns it with stdin open.
@@ -148,25 +149,55 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 		// frame has a permanently moving region, and stillimage's psy tuning
 		// makes x264 take many seconds to re-sharpen it after the banner
 		// fades in under a tight CBR budget. preset medium is still cheap at
-		// these low frame rates and buys sharper pills per bit.
+		// these low frame rates and buys sharper pills per bit — except in
+		// low-latency mode, where the medium preset's ~40-frame rc-lookahead is
+		// ~4s of delay at these low frame rates, so we drop to veryfast and
+		// disable every look-ahead/reorder stage below.
+		preset := "medium"
+		if c.LowLatency {
+			preset = "veryfast"
+		}
 		args = append(args,
-			"-c:v", "libx264", "-preset", "medium",
+			"-c:v", "libx264", "-preset", preset,
 			"-pix_fmt", "yuv420p", "-r", itoa(c.FPS), "-g", itoa(gop),
 			"-fps_mode", "cfr",
 		)
+		// x264-params assembled once so low-latency keys apply in both the CBR
+		// and CRF (empty bitrate) paths.
+		var x264Params []string
 		if c.VideoBitrate != "" {
-			// CBR on the wire (min=max=target + HRD filler). The 4x-rate VBV
-			// buffer gives rate control enough burst headroom to re-sharpen
-			// the banner right after it fades in instead of smearing it for
-			// seconds; the line rate itself stays constant.
+			// CBR on the wire (min=max=target + HRD filler). Off low-latency the
+			// 4x-rate VBV buffer gives rate control burst headroom to re-sharpen
+			// the banner after it fades in; low-latency shrinks it to 1x (~1s) to
+			// cut HRD buffering delay. The line rate itself stays constant.
+			bufFactor := 4.0
+			if c.LowLatency {
+				bufFactor = 1.0
+			}
 			args = append(args, "-b:v", c.VideoBitrate, "-minrate", c.VideoBitrate, "-maxrate", c.VideoBitrate,
-				"-bufsize", scaleRate(c.VideoBitrate, 4), "-x264-params", "nal-hrd=cbr")
+				"-bufsize", scaleRate(c.VideoBitrate, bufFactor))
+			x264Params = append(x264Params, "nal-hrd=cbr")
+		}
+		if c.LowLatency {
+			// The x264 equivalent of NVENC "Ultra Low Latency": no B-frame
+			// reorder, no rate-control/sync look-ahead, slice-threaded (frame
+			// threading adds threads-worth of frames of delay), no scenecut.
+			x264Params = append(x264Params,
+				"bframes=0", "rc-lookahead=0", "sync-lookahead=0", "sliced-threads=1", "scenecut=0")
+		}
+		if len(x264Params) > 0 {
+			args = append(args, "-x264-params", strings.Join(x264Params, ":"))
 		}
 	}
 
 	args = append(args, "-c:a", "aac", "-b:a", c.AudioBitrate, "-ar", "48000", "-ac", "2")
 	if !audioInGraph {
 		args = append(args, "-af", "aresample=async=1:first_pts=0")
+	}
+	if c.LowLatency {
+		// Push each packet to the wire as soon as it's muxed instead of letting
+		// the FLV muxer accumulate a buffer.
+		args = append(args, "-flush_packets", "1")
 	}
 	args = append(args,
 		// -shortest: the looping video never EOFs on its own, so tie output

@@ -76,6 +76,7 @@ type Settings struct {
 	NowOverlay   bool   // show the "now playing" lower-third banner
 	VizStyle     string // banner visualization: "bars" | "wave" | "none"
 	BannerBox    bool   // translucent box behind the banner
+	LowLatency   bool   // x264 low-latency tuning for live streaming
 	Theme        string
 }
 

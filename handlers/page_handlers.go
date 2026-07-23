@@ -177,6 +177,7 @@ func (app *App) SaveSettings(w http.ResponseWriter, r *http.Request) {
 		NowOverlay:   r.FormValue("now_overlay") != "",
 		VizStyle:     r.FormValue("viz_style"),
 		BannerBox:    r.FormValue("banner_box") != "",
+		LowLatency:   r.FormValue("low_latency") != "",
 		Theme:        r.FormValue("theme"),
 	}
 	if !IsValidTheme(st.Theme) {

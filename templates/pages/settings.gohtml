@@ -73,6 +73,10 @@
                             </label>
                         </div>
                         <label class="field check-field">
+                            <input type="checkbox" name="low_latency" {{if $st.LowLatency}}checked{{end}}>
+                            <span>Low latency (recommended for live)</span>
+                        </label>
+                        <label class="field check-field">
                             <input type="checkbox" name="now_overlay" data-bind:nowbanner {{if $st.NowOverlay}}checked{{end}}>
                             <span>Show "now playing" banner on the video</span>
                         </label>

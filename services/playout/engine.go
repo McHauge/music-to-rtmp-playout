@@ -130,6 +130,7 @@ func (e *Engine) Start(items []services.FlowItem, set services.Settings, playlis
 		NowOverlay:   set.NowOverlay,
 		VizStyle:     set.VizStyle,
 		BannerBox:    set.BannerBox,
+		LowLatency:   set.LowLatency,
 	}
 	enc, err := startEncoder(encCfg)
 	if err != nil {

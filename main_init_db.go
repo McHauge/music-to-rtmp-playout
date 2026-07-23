@@ -75,6 +75,7 @@ func initDB(db *sql.DB) error {
 			now_overlay INTEGER NOT NULL DEFAULT 1,   -- bool: "now playing" overlay
 			viz_style TEXT NOT NULL DEFAULT 'bars',   -- banner visualization: 'bars' | 'wave' | 'none'
 			banner_box INTEGER NOT NULL DEFAULT 1,    -- bool: translucent box behind the banner
+			low_latency INTEGER NOT NULL DEFAULT 1,   -- bool: x264 low-latency tuning for live
 			theme TEXT NOT NULL DEFAULT 'teal'
 		)`,
 		`INSERT OR IGNORE INTO settings (id) VALUES (1)`,
@@ -109,6 +110,9 @@ func initDB(db *sql.DB) error {
 		return err
 	}
 	if err := ensureColumn(db, "settings", "banner_box INTEGER NOT NULL DEFAULT 1"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "settings", "low_latency INTEGER NOT NULL DEFAULT 1"); err != nil {
 		return err
 	}
 	if err := ensureColumn(db, "tracks", "art_path TEXT NOT NULL DEFAULT ''"); err != nil {
