@@ -139,8 +139,14 @@ func (s *LibraryService) importVia(url, source string, progress func(line string
 		"--write-thumbnail", "--convert-thumbnails", "png",
 		"--ignore-errors",
 		"-o", outTmpl,
-		url,
 	}
+	// The audio extraction + thumbnail conversion above need ffmpeg. Our ffmpeg
+	// is bundled in BIN_DIR, which isn't on PATH, so point yt-dlp at it directly
+	// (accepts the binary's directory) instead of relying on its own lookup.
+	if s.ffmpegPath != "" {
+		args = append(args, "--ffmpeg-location", filepath.Dir(s.ffmpegPath))
+	}
+	args = append(args, url)
 	cmd := exec.Command(s.ytdlpPath, args...)
 	stdout, _ := cmd.StdoutPipe()
 	cmd.Stderr = cmd.Stdout
