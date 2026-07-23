@@ -22,6 +22,7 @@ type App struct {
 	Flow       *services.FlowService
 	Soundboard *services.SoundboardService
 	Settings   *services.SettingsService
+	Spotify    *services.SpotifyService
 	Engine     *playout.Engine
 }
 
@@ -29,10 +30,12 @@ type App struct {
 func NewApp(db *sql.DB, store *sessions.CookieStore, cfg *config.Config,
 	tmpl *Templates,
 	auth *services.AuthService, lib *services.LibraryService, flow *services.FlowService,
-	sb *services.SoundboardService, settings *services.SettingsService, engine *playout.Engine) *App {
+	sb *services.SoundboardService, settings *services.SettingsService,
+	spotify *services.SpotifyService, engine *playout.Engine) *App {
 	return &App{
 		Db: db, Store: store, Cfg: cfg, Tmpl: tmpl,
-		Auth: auth, Library: lib, Flow: flow, Soundboard: sb, Settings: settings, Engine: engine,
+		Auth: auth, Library: lib, Flow: flow, Soundboard: sb, Settings: settings,
+		Spotify: spotify, Engine: engine,
 	}
 }
 

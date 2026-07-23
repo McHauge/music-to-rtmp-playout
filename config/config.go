@@ -48,6 +48,11 @@ type Config struct {
 	// Admin bootstrap (optional — first-run setup screen used otherwise)
 	AdminUsername string
 	AdminPassword string
+
+	// Spotify Web API (optional — playlist import via URL; the paste fallback
+	// in the UI needs no credentials)
+	SpotifyClientID     string
+	SpotifyClientSecret string
 }
 
 // LoadConfig reads configuration from the environment, applying defaults.
@@ -87,6 +92,9 @@ func LoadConfig() *Config {
 
 		AdminUsername: os.Getenv("ADMIN_USERNAME"),
 		AdminPassword: os.Getenv("ADMIN_PASSWORD"),
+
+		SpotifyClientID:     os.Getenv("SPOTIFY_CLIENT_ID"),
+		SpotifyClientSecret: os.Getenv("SPOTIFY_CLIENT_SECRET"),
 	}
 
 	if cfg.SessionSecret == "change-me-in-production" {

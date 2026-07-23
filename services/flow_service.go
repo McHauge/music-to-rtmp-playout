@@ -175,6 +175,12 @@ func (s *FlowService) SetAutoNext(itemID int64, autoNext bool) error {
 	return err
 }
 
+// SetBreakSec updates the length of a break item.
+func (s *FlowService) SetBreakSec(itemID int64, sec int) error {
+	_, err := s.db.Exec(`UPDATE flow_items SET break_sec = ? WHERE id = ? AND type = 'break'`, sec, itemID)
+	return err
+}
+
 // EstimateRuntimeSec sums song durations and break lengths for a show. Gates
 // have no fixed duration (they hold indefinitely) so they contribute nothing.
 func (s *FlowService) EstimateRuntimeSec(playlistID int64) (float64, error) {

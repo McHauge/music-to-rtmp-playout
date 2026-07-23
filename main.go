@@ -68,6 +68,7 @@ func main() {
 	flowSvc := services.NewFlowService(db)
 	soundboardSvc := services.NewSoundboardService(db, cfg.SoundboardDir, cfg.FFmpegPath)
 	settingsSvc := services.NewSettingsService(db)
+	spotifySvc := services.NewSpotifyService(cfg.SpotifyClientID, cfg.SpotifyClientSecret)
 
 	// Seed settings from config defaults on first run (empty RTMP URL). The
 	// resolution backfill also covers DBs migrated from before it was a setting.
@@ -100,7 +101,7 @@ func main() {
 		log.Fatalf("load templates: %v", err)
 	}
 
-	app := handlers.NewApp(db, store, cfg, tmpl, authSvc, librarySvc, flowSvc, soundboardSvc, settingsSvc, engine)
+	app := handlers.NewApp(db, store, cfg, tmpl, authSvc, librarySvc, flowSvc, soundboardSvc, settingsSvc, spotifySvc, engine)
 
 	// MIME fixes for Windows dev.
 	mime.AddExtensionType(".css", "text/css")
@@ -127,7 +128,9 @@ func main() {
 	r.HandleFunc("/api/library/upload", app.RequireAuth(app.UploadTrack)).Methods("POST")
 	r.HandleFunc("/api/library/delete", app.RequireAuth(app.DeleteTrack)).Methods("POST")
 	r.HandleFunc("/api/library/edit", app.RequireAuth(app.EditTrack)).Methods("POST")
+	r.HandleFunc("/api/library/preview", app.RequireAuth(app.PreviewTrack)).Methods("GET")
 	r.HandleFunc("/api/library/import", app.RequireAuth(app.ImportYouTube)).Methods("GET")
+	r.HandleFunc("/api/library/import-spotify", app.RequireAuth(app.ImportSpotify)).Methods("POST")
 
 	// Flow API.
 	r.HandleFunc("/api/flow/create", app.RequireAuth(app.CreatePlaylist)).Methods("POST")
@@ -137,9 +140,11 @@ func main() {
 	r.HandleFunc("/api/flow/item/delete", app.RequireAuth(app.DeleteItem)).Methods("POST")
 	r.HandleFunc("/api/flow/item/move", app.RequireAuth(app.MoveItem)).Methods("POST")
 	r.HandleFunc("/api/flow/item/autonext", app.RequireAuth(app.ToggleAutoNext)).Methods("POST")
+	r.HandleFunc("/api/flow/item/breaksec", app.RequireAuth(app.SetBreakSec)).Methods("POST")
 	r.HandleFunc("/api/flow/reorder", app.RequireAuth(app.ReorderItems)).Methods("POST")
 	r.HandleFunc("/api/flow/bulk-upload", app.RequireAuth(app.BulkUploadToFlow)).Methods("POST")
 	r.HandleFunc("/api/flow/import-youtube", app.RequireAuth(app.ImportYouTubeToFlow)).Methods("POST")
+	r.HandleFunc("/api/flow/import-spotify", app.RequireAuth(app.ImportSpotifyToFlow)).Methods("POST")
 
 	// Soundboard API.
 	r.HandleFunc("/api/soundboard/upload", app.RequireAuth(app.UploadClip)).Methods("POST")

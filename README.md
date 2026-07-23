@@ -11,8 +11,10 @@ FFmpeg, yt-dlp, and a bundled MediaMTX relay.
 
 ## Features
 
-- **Library** — import audio from a YouTube video/playlist URL (yt-dlp) or
-  upload files directly. Edit title/artist, delete.
+- **Library** — import audio from a YouTube video/playlist URL (yt-dlp), a
+  Spotify playlist (track list via the Spotify API or a pasted "Artist - Title"
+  list; audio is matched by duration and fetched from YouTube), or upload files
+  directly. Edit title/artist, delete.
 - **Flow builder** — order **songs**, fixed-length silent **breaks**, and
   **manual holds** (gates that pause playout until you press Play). Per-item
   "auto-next vs. hold after" toggle. Live runtime estimate.
@@ -78,6 +80,16 @@ Then visit http://localhost:8080 and sign in. Configure the RTMP target in
 
 All settings have env defaults (see [.env.example](.env.example)); the
 RTMP target, background, encoder params, and theme are also editable in the UI.
+
+**Spotify playlist import** (optional): set `SPOTIFY_CLIENT_ID` /
+`SPOTIFY_CLIENT_SECRET` from a free app at the
+[Spotify developer dashboard](https://developer.spotify.com/dashboard) to
+import playlists by URL. Spotify
+only ever provides the track list — audio is found on YouTube by matching each
+track's exact duration (so slowed/sped-up re-uploads lose to the real version)
+and downloaded with yt-dlp. Spotify-made editorial playlists (Today's Top Hits
+etc.) are blocked for third-party apps; for those, paste the track list into
+the fallback box instead — that path needs no credentials at all.
 
 ## Self-contained tooling
 

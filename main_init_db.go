@@ -26,7 +26,7 @@ func initDB(db *sql.DB) error {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			title TEXT NOT NULL,
 			artist TEXT NOT NULL DEFAULT '',
-			source TEXT NOT NULL DEFAULT 'upload',   -- 'youtube' | 'upload'
+			source TEXT NOT NULL DEFAULT 'upload',   -- 'youtube' | 'upload' | 'spotify'
 			file_path TEXT NOT NULL,
 			duration_sec REAL NOT NULL DEFAULT 0,
 			added_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP

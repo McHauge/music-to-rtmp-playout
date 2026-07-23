@@ -49,6 +49,8 @@ The audio pipeline is fixed-format **48 kHz / stereo / s16le** PCM end to end (c
 ### Data & services (`services/`)
 SQLite schema is created in code at startup (`main_init_db.go`, `initDB`) — WAL mode, `SetMaxOpenConns(1)` to serialize writes. Tables: `users`, `tracks`, `playlists`, `flow_items` (type = `song|break|gate`), `soundboard_clips`, single-row `settings`. Each service (`*_service.go`) wraps the `*sql.DB` for one domain. Models and the flow-item type constants live in `models.go`. Settings are seeded from config env defaults on first run and are then editable in the UI; `Settings.FullRTMPURL()` joins base URL + stream key.
 
+Spotify playlist import (`spotify_service.go`) is metadata-only: `SpotifyService` (client-credentials flow, stdlib HTTP, cached app token; `SPOTIFY_CLIENT_ID/SECRET` env-only) or a pasted "Artist - Title" list resolves to `SpotifyTrack` tuples, then `LibraryService.ImportSearch` scores the top YouTube search results (Spotify duration proximity, version-keyword penalties, "- Topic" channel bonus) and downloads the winner through the normal yt-dlp pipeline — yt-dlp stays the only downloader.
+
 ### External tools & config
 `config/config.go` `resolveTool` locates each binary in order: `*_PATH` env → `BIN_DIR` (`./bin`) → bare name on PATH. This is what makes the app self-contained — tools are bundled, not assumed installed. All config has env defaults (`.env` via godotenv); the RTMP target, background, encoder params, and theme are also DB-backed and editable in Settings.
 

@@ -115,6 +115,12 @@ func (s *LibraryService) AddUpload(origName string, src io.Reader) (*Track, erro
 // Returns the tracks the URL resolved to in playlist order, including ones
 // that were already in the library.
 func (s *LibraryService) ImportYouTube(url string, progress func(line string)) ([]Track, error) {
+	return s.importVia(url, "youtube", progress)
+}
+
+// importVia runs yt-dlp on url (a real URL or a ytsearchN: query) and imports
+// each resulting file with the given source tag.
+func (s *LibraryService) importVia(url, source string, progress func(line string)) ([]Track, error) {
 	if strings.TrimSpace(url) == "" {
 		return nil, fmt.Errorf("empty URL")
 	}
@@ -151,14 +157,168 @@ func (s *LibraryService) ImportYouTube(url string, progress func(line string)) (
 		}
 	}
 
-	return s.importInfoJSONs(progress)
+	return s.importInfoJSONs(source, progress)
+}
+
+// ImportSearch downloads the best-matching YouTube result for a track and
+// imports it with the given source tag. Instead of blindly taking the top
+// search hit, it fetches metadata for the top few results and scores them
+// against the wanted track (duration proximity, version keywords, official
+// "- Topic" channels) so slowed/sped-up/live re-uploads lose to the real
+// version. Returns the resulting track (possibly a pre-existing library row,
+// deduped by path).
+func (s *LibraryService) ImportSearch(want SpotifyTrack, source string, progress func(line string)) (*Track, error) {
+	query := strings.TrimSpace(want.Query())
+	if query == "" {
+		return nil, fmt.Errorf("empty track")
+	}
+	cands, err := s.searchCandidates(query, 5)
+	if err != nil {
+		return nil, err
+	}
+	if len(cands) == 0 {
+		return nil, fmt.Errorf("no YouTube result for %q", query)
+	}
+	best := pickBestCandidate(cands, want)
+	if progress != nil {
+		dur := ""
+		if best.DurationSec > 0 {
+			dur = fmt.Sprintf(" (%d:%02d)", best.DurationSec/60, best.DurationSec%60)
+		}
+		progress(fmt.Sprintf("matched: %s [%s]%s", best.Title, best.Channel, dur))
+		if warn := matchWarning(best, want); warn != "" {
+			progress("⚠ " + warn)
+		}
+	}
+	tracks, err := s.importVia("https://www.youtube.com/watch?v="+best.ID, source, progress)
+	if err != nil {
+		return nil, err
+	}
+	if len(tracks) == 0 {
+		return nil, fmt.Errorf("download failed for %q", best.Title)
+	}
+	return &tracks[0], nil
+}
+
+// searchCandidate is one YouTube search result (metadata only, no download).
+type searchCandidate struct {
+	ID          string
+	Title       string
+	Channel     string
+	DurationSec int
+}
+
+// searchCandidates fetches metadata for the top n YouTube search results.
+func (s *LibraryService) searchCandidates(query string, n int) ([]searchCandidate, error) {
+	cmd := exec.Command(s.ytdlpPath,
+		"--flat-playlist", "--dump-json", "--no-download", "--no-warnings",
+		fmt.Sprintf("ytsearch%d:%s", n, query))
+	out, err := cmd.Output()
+	if err != nil && len(out) == 0 {
+		return nil, fmt.Errorf("yt-dlp search failed: %w", err)
+	}
+	var cands []searchCandidate
+	sc := bufio.NewScanner(strings.NewReader(string(out)))
+	sc.Buffer(make([]byte, 64*1024), 1024*1024)
+	for sc.Scan() {
+		var e struct {
+			ID       string  `json:"id"`
+			Title    string  `json:"title"`
+			Channel  string  `json:"channel"`
+			Uploader string  `json:"uploader"`
+			Duration float64 `json:"duration"`
+		}
+		if json.Unmarshal(sc.Bytes(), &e) != nil || e.ID == "" {
+			continue
+		}
+		ch := e.Channel
+		if ch == "" {
+			ch = e.Uploader
+		}
+		cands = append(cands, searchCandidate{
+			ID: e.ID, Title: e.Title, Channel: ch, DurationSec: int(e.Duration),
+		})
+	}
+	return cands, nil
+}
+
+// versionWords are title markers of alternate versions we don't want unless
+// the wanted track's own title contains the same word.
+var versionWords = []string{
+	"slowed", "sped", "speed up", "reverb", "nightcore", "8d",
+	"live", "cover", "remix", "instrumental", "karaoke", "loop", "1 hour",
+}
+
+// pickBestCandidate scores candidates against the wanted track and returns
+// the best. Duration proximity dominates when the wanted duration is known;
+// otherwise version-keyword penalties and official-upload bonuses decide.
+func pickBestCandidate(cands []searchCandidate, want SpotifyTrack) searchCandidate {
+	wantTitle := strings.ToLower(want.Title)
+	best, bestScore := cands[0], -1<<30
+	for _, c := range cands {
+		score := 0
+		title := strings.ToLower(c.Title)
+		if want.DurationSec > 0 && c.DurationSec > 0 {
+			diff := c.DurationSec - want.DurationSec
+			if diff < 0 {
+				diff = -diff
+			}
+			switch {
+			case diff <= 3:
+				score += 100
+			case diff > 20:
+				score -= 100
+			default:
+				score -= diff * 3
+			}
+		}
+		for _, w := range versionWords {
+			if strings.Contains(title, w) && !strings.Contains(wantTitle, w) {
+				score -= 40
+			}
+		}
+		if strings.HasSuffix(c.Channel, " - Topic") {
+			score += 30 // auto-generated label upload: the official audio
+		}
+		if strings.Contains(title, "official audio") || strings.Contains(title, "official video") {
+			score += 15
+		}
+		if score > bestScore {
+			best, bestScore = c, score
+		}
+	}
+	return best
+}
+
+// matchWarning returns a non-empty message when the chosen candidate looks
+// like it may be the wrong version, so the import log can flag it instead of
+// failing silently.
+func matchWarning(c searchCandidate, want SpotifyTrack) string {
+	if want.DurationSec > 0 && c.DurationSec > 0 {
+		diff := c.DurationSec - want.DurationSec
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff > 5 {
+			return fmt.Sprintf("closest match runs %d:%02d but Spotify lists %d:%02d — this may be a different version, verify it",
+				c.DurationSec/60, c.DurationSec%60, want.DurationSec/60, want.DurationSec%60)
+		}
+		return ""
+	}
+	title, wantTitle := strings.ToLower(c.Title), strings.ToLower(want.Title)
+	for _, w := range versionWords {
+		if strings.Contains(title, w) && !strings.Contains(wantTitle, w) {
+			return fmt.Sprintf("title contains %q — this may be a different version, verify it", w)
+		}
+	}
+	return ""
 }
 
 // importInfoJSONs scans the media dir for *.info.json written by yt-dlp and
 // resolves each to a track — inserting new ones, reusing existing rows (deduped
 // by file path) — returned in playlist order (playlist_index ascending; entries
 // without an index, i.e. single videos, come last in filename order).
-func (s *LibraryService) importInfoJSONs(progress func(string)) ([]Track, error) {
+func (s *LibraryService) importInfoJSONs(source string, progress func(string)) ([]Track, error) {
 	type ytInfo struct {
 		ID            string  `json:"id"`
 		Title         string  `json:"title"`
@@ -224,7 +384,7 @@ func (s *LibraryService) importInfoJSONs(progress func(string)) ([]Track, error)
 		if dur == 0 {
 			dur = s.probeDuration(audioPath)
 		}
-		if t, err := s.insertTrack(info.Title, artist, "youtube", audioPath, dur); err == nil {
+		if t, err := s.insertTrack(info.Title, artist, source, audioPath, dur); err == nil {
 			out = append(out, *t)
 			if progress != nil {
 				progress("imported: " + info.Title)

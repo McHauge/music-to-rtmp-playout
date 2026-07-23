@@ -50,6 +50,22 @@ func (app *App) DeleteTrack(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/library", http.StatusSeeOther)
 }
 
+// PreviewTrack serves a track's audio file for in-browser pre-listening.
+// http.ServeFile handles Range requests, so the <audio> element can seek.
+func (app *App) PreviewTrack(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
+	t, err := app.Library.GetTrack(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if t == nil {
+		http.NotFound(w, r)
+		return
+	}
+	http.ServeFile(w, r, t.FilePath)
+}
+
 // EditTrack updates title/artist.
 func (app *App) EditTrack(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()

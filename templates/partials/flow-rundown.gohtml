@@ -11,12 +11,26 @@
             {{if eq $it.Type "song"}}
                 {{if $it.Track}}🎵 {{if $it.Track.Artist}}{{$it.Track.Artist}} — {{end}}{{$it.Track.Title}}{{else}}🎵 (missing track){{end}}
             {{else if eq $it.Type "break"}}
-                ⏲ Break — {{$it.BreakSec}}s
+                ⏲ Break&nbsp; —
+                <form method="POST" action="/api/flow/item/breaksec" class="inline break-edit">
+                    <input type="hidden" name="playlist_id" value="{{$pl.ID}}">
+                    <input type="hidden" name="id" value="{{$it.ID}}">
+                    <input class="break-sec" type="number" name="break_sec" value="{{$it.BreakSec}}"
+                           min="1" max="3600" onchange="this.form.submit()" title="Break length in seconds">s
+                </form>
             {{else}}
                 ⏸ {{if $it.Label}}Hold: {{$it.Label}}{{else}}Manual hold{{end}}
             {{end}}
         </span>
         <span class="flow-flags">
+            {{if and (eq $it.Type "song") $it.Track}}
+            <button class="btn btn-sm btn-outline preview-stop" type="button" data-track="{{$it.Track.ID}}"
+                    onclick="previewStop(this)" title="Stop and reset">⏹</button>
+            <button class="btn btn-sm btn-outline preview-btn" type="button" data-track="{{$it.Track.ID}}"
+                    onclick="previewToggle(this)" title="Pre-listen">▶</button>
+            <button class="btn btn-sm btn-outline preview-fwd" type="button" data-track="{{$it.Track.ID}}"
+                    onclick="previewForward(this)" title="Skip ahead 10 seconds">+10s</button>
+            {{end}}
             {{if ne $it.Type "gate"}}
             <form method="POST" action="/api/flow/item/autonext" class="inline">
                 <input type="hidden" name="playlist_id" value="{{$pl.ID}}">

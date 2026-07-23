@@ -15,22 +15,46 @@ import (
 // bulkLogger returns a printf-style logger that re-patches #bulk-log with a
 // rolling 40-line buffer on every call.
 func bulkLogger(sse *datastar.ServerSentEventGenerator) func(format string, args ...any) {
+	return rollingLogger(sse, "bulk-log")
+}
+
+// rollingLogger returns a printf-style logger that re-patches the given div
+// with a rolling 40-line buffer on every call. Warning/failure lines are
+// tinted so they stand out in the stream.
+func rollingLogger(sse *datastar.ServerSentEventGenerator, divID string) func(format string, args ...any) {
 	var lines []string
 	return func(format string, args ...any) {
 		lines = append(lines, fmt.Sprintf(format, args...))
 		var b strings.Builder
-		b.WriteString(`<div id="bulk-log" class="import-log">`)
+		b.WriteString(`<div id="` + divID + `" class="import-log">`)
 		start := 0
 		if len(lines) > 40 {
 			start = len(lines) - 40
 		}
 		for _, l := range lines[start:] {
-			b.WriteString(html.EscapeString(l))
+			if isWarnLine(l) {
+				b.WriteString(`<span class="log-warn">`)
+				b.WriteString(html.EscapeString(l))
+				b.WriteString(`</span>`)
+			} else {
+				b.WriteString(html.EscapeString(l))
+			}
 			b.WriteString("<br>")
 		}
 		b.WriteString(`</div>`)
 		sse.PatchElements(b.String())
 	}
+}
+
+// isWarnLine reports whether a log line should be highlighted as a warning.
+func isWarnLine(l string) bool {
+	l = strings.ToLower(strings.TrimSpace(l))
+	for _, p := range []string{"⚠", "warning:", "failed:", "skipped:", "error:"} {
+		if strings.HasPrefix(l, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // BulkUploadToFlow uploads many audio files and appends each to the show's

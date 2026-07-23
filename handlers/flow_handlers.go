@@ -115,6 +115,18 @@ func (app *App) ReorderItems(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// SetBreakSec updates a break item's length from the inline field in the rundown.
+func (app *App) SetBreakSec(w http.ResponseWriter, r *http.Request) {
+	plID, _ := strconv.ParseInt(r.FormValue("playlist_id"), 10, 64)
+	itemID, _ := strconv.ParseInt(r.FormValue("id"), 10, 64)
+	sec, _ := strconv.Atoi(r.FormValue("break_sec"))
+	if sec <= 0 {
+		sec = 20
+	}
+	_ = app.Flow.SetBreakSec(itemID, sec)
+	http.Redirect(w, r, "/flow?id="+strconv.FormatInt(plID, 10), http.StatusSeeOther)
+}
+
 // ToggleAutoNext flips an item's auto-continue flag.
 func (app *App) ToggleAutoNext(w http.ResponseWriter, r *http.Request) {
 	plID, _ := strconv.ParseInt(r.FormValue("playlist_id"), 10, 64)

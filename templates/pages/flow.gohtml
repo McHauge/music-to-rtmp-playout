@@ -6,7 +6,7 @@
     {{template "orbs" .}}
     <div class="wrapper">
         {{template "navbar" .}}
-        <main class="page">
+        <main class="page page-wide">
             <h1 class="page-title">Flow Builder</h1>
 
             <div class="grid-sidebar">
@@ -52,7 +52,7 @@
                     <!-- Bulk add songs -->
                     <div class="bulk-upload">
                         <h3>Bulk add songs</h3>
-                        <p class="muted">Upload files or import from YouTube — each song is appended to the rundown using the options below.</p>
+                        <p class="muted">Upload files or import from YouTube or Spotify — each song is appended to the rundown using the options below.</p>
                         <form id="bulk-form" enctype="multipart/form-data" class="bulk-form" data-signals:bulksrc="'upload'">
                             <input type="hidden" name="playlist_id" value="{{$pl.ID}}">
                             <div class="bulk-source-row">
@@ -63,13 +63,23 @@
                                     <button type="button" class="bulk-tab"
                                             data-class:active="$bulksrc=='youtube'"
                                             data-on:click="$bulksrc='youtube'">YouTube link</button>
+                                    <button type="button" class="bulk-tab"
+                                            data-class:active="$bulksrc=='spotify'"
+                                            data-on:click="$bulksrc='spotify'">Spotify</button>
                                 </div>
                                 <input type="file" name="files" accept="audio/*" multiple
                                        data-show="$bulksrc=='upload'">
                                 <input name="youtube_url" data-bind:yturl
                                        data-show="$bulksrc=='youtube'"
                                        placeholder="https://youtube.com/watch?v=… — video, playlist, or YouTube Music URL">
+                                <input name="spotify_url" data-bind:spoturl
+                                       data-show="$bulksrc=='spotify'"
+                                       placeholder="https://open.spotify.com/playlist/… (or paste tracks below)">
                             </div>
+                            <textarea name="spotify_paste" data-bind:spotpaste rows="3"
+                                      data-show="$bulksrc=='spotify'"
+                                      placeholder="Optional fallback: one 'Artist - Title' per line"></textarea>
+                            <p class="hint-warn" data-show="$bulksrc=='spotify'">⚠ Spotify import may not be 100% accurate — each song is found via YouTube search and download. Uncertain matches are flagged in the log below.</p>
                             <label class="bulk-spacing">Start
                                 <select name="start_mode" title="Auto: songs play through. Manual: playback holds before each song until you press play.">
                                     <option value="auto" selected>Auto-continue</option>
@@ -84,19 +94,27 @@
                             <button type="button" class="btn btn-sm btn-primary"
                                     data-show="$bulksrc=='upload'"
                                     data-indicator:bulkbusy
-                                    data-attr:disabled="$bulkbusy || $ytbusy"
+                                    data-attr:disabled="$bulkbusy || $ytbusy || $spotbusy"
                                     data-on:click="@post('/api/flow/bulk-upload', {contentType: 'form'})">
                                 Upload &amp; add to rundown
                             </button>
                             <button type="button" class="btn btn-sm btn-primary"
                                     data-show="$bulksrc=='youtube'"
                                     data-indicator:ytbusy
-                                    data-attr:disabled="$bulkbusy || $ytbusy"
+                                    data-attr:disabled="$bulkbusy || $ytbusy || $spotbusy"
                                     data-on:click="@post('/api/flow/import-youtube', {contentType: 'form'})">
                                 Import &amp; add to rundown
                             </button>
+                            <button type="button" class="btn btn-sm btn-primary"
+                                    data-show="$bulksrc=='spotify'"
+                                    data-indicator:spotbusy
+                                    data-attr:disabled="$bulkbusy || $ytbusy || $spotbusy"
+                                    data-on:click="@post('/api/flow/import-spotify', {contentType: 'form'})">
+                                Import from Spotify &amp; add
+                            </button>
                             <span data-show="$bulkbusy" class="muted">Uploading…</span>
                             <span data-show="$ytbusy" class="muted">Importing…</span>
+                            <span data-show="$spotbusy" class="muted">Importing…</span>
                         </form>
                         <div id="bulk-log" class="import-log"></div>
                     </div>
@@ -136,6 +154,9 @@
     </div>
     <script defer src="/static/vendor/sortable.min.js"></script>
     <script defer src="/static/flow-dnd.js"></script>
+    {{/* Shared pre-listen player; lives outside #flow-rundown so SSE patches don't interrupt playback. */}}
+    <audio id="preview-audio" preload="none"></audio>
+    <script defer src="/static/preview.js"></script>
 </body>
 </html>
 {{end}}
