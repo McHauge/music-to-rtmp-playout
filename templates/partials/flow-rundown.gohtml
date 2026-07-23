@@ -1,0 +1,86 @@
+{{/* The rundown list for one show. Data: {Playlist, Items}. Rendered inline on
+     the flow page and re-patched over SSE after bulk uploads. */}}
+{{define "flow-rundown"}}
+{{$pl := .Playlist}}
+<ol id="flow-rundown" class="flow-list" data-playlist-id="{{$pl.ID}}">
+    {{range $i, $it := .Items}}
+    <li class="flow-item flow-{{$it.Type}}" data-id="{{$it.ID}}">
+        <span class="flow-drag" title="Drag to reorder">⋮⋮</span>
+        <span class="flow-pos">{{add $i 1}}</span>
+        <span class="flow-desc">
+            {{if eq $it.Type "song"}}
+                {{if $it.Track}}🎵 {{if $it.Track.Artist}}{{$it.Track.Artist}} — {{end}}{{$it.Track.Title}}{{else}}🎵 (missing track){{end}}
+            {{else if eq $it.Type "break"}}
+                ⏲ Break&nbsp; —
+                <form method="POST" action="/api/flow/item/breaksec" class="inline break-edit">
+                    <input type="hidden" name="playlist_id" value="{{$pl.ID}}">
+                    <input type="hidden" name="id" value="{{$it.ID}}">
+                    <input class="break-sec" type="number" name="break_sec" value="{{$it.BreakSec}}"
+                           min="1" max="3600" onchange="this.form.submit()" title="Break length in seconds">s
+                </form>
+            {{else}}
+                ⏸ {{if $it.Label}}Hold: {{$it.Label}}{{else}}Manual hold{{end}}
+            {{end}}
+        </span>
+        <span class="flow-flags">
+            {{if and (eq $it.Type "song") $it.Track}}
+            <button class="btn btn-sm btn-outline preview-stop" type="button" data-track="{{$it.Track.ID}}"
+                    onclick="previewStop(this)" title="Stop and reset">⏹</button>
+            <button class="btn btn-sm btn-outline preview-btn" type="button" data-track="{{$it.Track.ID}}"
+                    onclick="previewToggle(this)" title="Pre-listen">▶</button>
+            <button class="btn btn-sm btn-outline preview-fwd" type="button" data-track="{{$it.Track.ID}}"
+                    onclick="previewForward(this)" title="Skip ahead 10 seconds">+10s</button>
+            {{end}}
+            {{if ne $it.Type "gate"}}
+            <form method="POST" action="/api/flow/item/autonext" class="inline">
+                <input type="hidden" name="playlist_id" value="{{$pl.ID}}">
+                <input type="hidden" name="id" value="{{$it.ID}}">
+                <input type="hidden" name="auto_next" value="{{if $it.AutoNext}}off{{else}}on{{end}}">
+                <button class="chip {{if $it.AutoNext}}chip-on{{end}}" type="submit"
+                        title="Toggle auto-continue">
+                    {{if $it.AutoNext}}auto-next{{else}}hold after{{end}}
+                </button>
+            </form>
+            {{end}}
+        </span>
+        <span class="flow-actions">
+            <form method="POST" action="/api/flow/item/move" class="inline">
+                <input type="hidden" name="playlist_id" value="{{$pl.ID}}">
+                <input type="hidden" name="id" value="{{$it.ID}}">
+                <input type="hidden" name="dir" value="up">
+                <button class="btn btn-sm btn-outline" type="submit">↑</button>
+            </form>
+            <form method="POST" action="/api/flow/item/move" class="inline">
+                <input type="hidden" name="playlist_id" value="{{$pl.ID}}">
+                <input type="hidden" name="id" value="{{$it.ID}}">
+                <input type="hidden" name="dir" value="down">
+                <button class="btn btn-sm btn-outline" type="submit">↓</button>
+            </form>
+            <form method="POST" action="/api/flow/item/delete" class="inline">
+                <input type="hidden" name="playlist_id" value="{{$pl.ID}}">
+                <input type="hidden" name="id" value="{{$it.ID}}">
+                <button class="btn btn-sm btn-danger" type="submit">✕</button>
+            </form>
+        </span>
+    </li>
+    {{else}}
+    <li class="empty">No items yet — bulk-upload songs above, or add items below.</li>
+    {{end}}
+    {{if .Items}}
+    <li class="flow-total">
+        <span class="muted">Total runtime {{fmtDuration (runtimeSec .Items)}}</span>
+    </li>
+    {{end}}
+</ol>
+{{end}}
+
+{{/* The add-a-song dropdown. Data: {Tracks}. Patched after bulk uploads so new
+     tracks show up without a reload. */}}
+{{define "flow-song-select"}}
+<select id="flow-song-select" name="track_id" required>
+    <option value="" disabled selected>Add a song…</option>
+    {{range .Tracks}}
+    <option value="{{.ID}}">{{if .Artist}}{{.Artist}} — {{end}}{{.Title}}</option>
+    {{end}}
+</select>
+{{end}}

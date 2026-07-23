@@ -1,0 +1,67 @@
+{{define "page-library"}}
+<!DOCTYPE html>
+<html lang="en" data-theme="{{.Theme}}">
+{{template "head" .}}
+<body data-signals="{url:'', spoturl:'', spotpaste:''}">
+    {{template "orbs" .}}
+    <div class="wrapper">
+        {{template "navbar" .}}
+        <main class="page page-wide">
+            <h1 class="page-title">Library</h1>
+
+            <div class="grid-2">
+                <section class="card glass">
+                    <h2>Upload files</h2>
+                    <p class="muted">Add individual audio files (mp3, m4a, opus, wav, …).</p>
+                    <form method="POST" action="/api/library/upload" enctype="multipart/form-data" class="upload-form">
+                        <input type="file" name="files" accept="audio/*" multiple required>
+                        <button class="btn btn-primary" type="submit">Upload</button>
+                    </form>
+                </section>
+
+                <section class="card glass">
+                    <h2>Import from YouTube</h2>
+                    <p class="muted">Paste a video or playlist URL. Audio is downloaded via yt-dlp.</p>
+                    <div class="import-row">
+                        <input data-bind:url placeholder="https://youtube.com/watch?v=… or playlist URL">
+                        <button class="btn btn-primary"
+                                data-on:click="@get('/api/library/import?url=' + encodeURIComponent($url))">
+                            Import
+                        </button>
+                    </div>
+                    <div id="import-log" class="import-log"></div>
+                </section>
+            </div>
+
+            <section class="card glass">
+                <h2>Import Spotify playlist</h2>
+                    <p class="muted">Paste a playlist URL (needs SPOTIFY_CLIENT_ID/SECRET in .env), or paste the track list below — one "Artist - Title" per line.</p>
+                <form>
+                    <div class="import-row">
+                        <input name="spotify_url" data-bind:spoturl placeholder="https://open.spotify.com/playlist/…">
+                        <button type="button" class="btn btn-primary"
+                                data-indicator:spotbusy
+                                data-attr:disabled="$spotbusy"
+                                data-on:click="@post('/api/library/import-spotify', {contentType: 'form'})">
+                            Import
+                        </button>
+                    </div>
+                    <textarea name="spotify_paste" data-bind:spotpaste rows="4"
+                              placeholder="Or paste tracks, one per line:&#10;Daft Punk - One More Time"></textarea>
+                </form>
+                <p class="hint-warn">⚠ Spotify import may not be 100% accurate — each song is found via YouTube search and download. Uncertain matches are flagged in the log.</p>
+                <div id="spotify-log" class="import-log"></div>
+            </section>
+
+            <section class="card glass">
+                <h2>Tracks</h2>
+                {{template "track-list" .Extra}}
+            </section>
+        </main>
+    </div>
+    {{/* Shared pre-listen player; lives outside #track-list so SSE patches don't interrupt playback. */}}
+    <audio id="preview-audio" preload="none"></audio>
+    <script defer src="/static/preview.js"></script>
+</body>
+</html>
+{{end}}

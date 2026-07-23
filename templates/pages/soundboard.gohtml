@@ -1,0 +1,51 @@
+{{define "page-soundboard"}}
+<!DOCTYPE html>
+<html lang="en" data-theme="{{.Theme}}">
+{{template "head" .}}
+<body>
+    {{template "orbs" .}}
+    <div class="wrapper">
+        {{template "navbar" .}}
+        <main class="page">
+            <h1 class="page-title">Soundboard</h1>
+
+            <section class="card glass">
+                <h2>Upload clip</h2>
+                <p class="muted">Clips are decoded to PCM on upload so they trigger instantly during a live show.</p>
+                <form method="POST" action="/api/soundboard/upload" enctype="multipart/form-data" class="upload-form">
+                    <input type="file" name="file" accept="audio/*" required>
+                    <button class="btn btn-primary" type="submit">Upload</button>
+                </form>
+            </section>
+
+            <section class="card glass">
+                <h2>Clips</h2>
+                {{if not .Extra.Running}}
+                    <p class="muted small">Triggering only mixes audio while a stream is live.</p>
+                {{end}}
+                <div class="clip-grid">
+                    {{range .Extra.Clips}}
+                    <div class="clip">
+                        <button class="clip-btn" data-on:click="@post('/api/soundboard/trigger?id={{.ID}}')">
+                            🔊 {{.Name}}
+                        </button>
+                        <button class="clip-preview preview-btn" type="button" data-track="{{.ID}}" data-cue
+                                data-src="/api/soundboard/preview?id={{.ID}}"
+                                onclick="previewToggle(this)" title="Pre-listen">▶</button>
+                        <form method="POST" action="/api/soundboard/delete" onsubmit="return confirm('Delete clip?')">
+                            <input type="hidden" name="id" value="{{.ID}}">
+                            <button class="clip-del btn btn-sm btn-danger" type="submit">✕</button>
+                        </form>
+                    </div>
+                    {{else}}
+                    <p class="empty">No clips yet.</p>
+                    {{end}}
+                </div>
+            </section>
+        </main>
+    </div>
+    <audio id="preview-audio" preload="none"></audio>
+    <script defer src="/static/preview.js"></script>
+</body>
+</html>
+{{end}}

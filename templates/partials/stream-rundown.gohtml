@@ -1,0 +1,76 @@
+{{/* Read-only rundown for the stream page. Data: {Running, Items, ItemIndex,
+     NextIndex, Played, Paused, Holding, Finished, PauseAfterArmed, PlaylistID}.
+     NextIndex is the "up next" line (queued item, else current+1). Played is a
+     set of indices actually played (visited and departed) — those rows dim, so
+     jumping around only dims where you've been, not everything above the cursor.
+     While live, clicking a row queues it as next (or jumps immediately when
+     paused/holding); while stopped, rows pick the start point ($startAt). The
+     auto-next chip toggles that row's flag. */}}
+{{define "stream-rundown"}}
+<ol id="stream-rundown" class="flow-list">
+    {{range $i, $it := .Items}}
+    {{if $.Running}}
+    <li class="flow-item flow-{{$it.Type}} clickable {{if eq $i $.ItemIndex}}now{{else if eq $i $.NextIndex}}queued{{else if index $.Played $i}}played{{end}}"
+        data-on:click="@post('/api/stream/jump?i={{$i}}')"
+        title="{{if or $.Paused $.Holding}}Jump the broadcast to this item{{else}}Play this item next (click again to cancel){{end}}">
+    {{else}}
+    <li class="flow-item flow-{{$it.Type}} clickable"
+        data-on:click="$startAt = {{$i}}"
+        data-class:sel="$startAt == {{$i}}"
+        title="Start the show from this item">
+    {{end}}
+        <span class="flow-pos">{{add $i 1}}</span>
+        <span class="flow-desc">
+            {{if and $.Running (eq $i $.ItemIndex) (or $.Paused $.Holding)}}⏸ {{end}}
+            {{if eq $it.Type "song"}}
+                {{if $it.Track}}🎵 {{if $it.Track.Artist}}{{$it.Track.Artist}} — {{end}}{{$it.Track.Title}}{{else}}🎵 (missing track){{end}}
+            {{else if eq $it.Type "break"}}
+                ⏲ Break — {{$it.BreakSec}}s
+            {{else}}
+                ⏸ {{if $it.Label}}Hold: {{$it.Label}}{{else}}Manual hold{{end}}
+            {{end}}
+        </span>
+        <span class="flow-time">
+            {{if eq $it.Type "song"}}{{if and $it.Track (gt $it.Track.DurationSec 0.0)}}{{fmtDuration $it.Track.DurationSec}}{{end}}
+            {{else if eq $it.Type "break"}}{{fmtSecs $it.BreakSec}}{{end}}
+        </span>
+        <span class="flow-flags">
+            {{if and $.Running (eq $i $.NextIndex)}}
+            <span class="chip chip-on">up next</span>
+            {{end}}
+            {{if ne $it.Type "gate"}}
+            <button class="chip {{if $it.AutoNext}}chip-on{{end}}"
+                    data-on:click__stop="@post('/api/stream/autonext?id={{$it.ID}}&i={{$i}}&on={{if $it.AutoNext}}0{{else}}1{{end}}&pl={{$.PlaylistID}}')"
+                    title="Toggle auto-continue for this item">
+                {{if $it.AutoNext}}auto-next{{else}}hold after{{end}}
+            </button>
+            {{end}}
+        </span>
+    </li>
+    {{else}}
+    <li class="empty">
+        {{if .PlaylistID}}This show has no items yet — add some in the Flow builder.{{else}}Pick a show above to see its rundown.{{end}}
+    </li>
+    {{end}}
+    {{if .Items}}
+    <li class="flow-total">
+        <div class="rundown-total">
+            <div class="rundown-total-line">
+                {{if .Running}}
+                <span>Elapsed <span data-text="$showElapsedFmt">{{fmtDuration .ElapsedSec}}</span></span>
+                <span class="muted">Total {{fmtDuration (runtimeSec .Items)}}</span>
+                {{else}}
+                <span class="muted">Total runtime {{fmtDuration (runtimeSec .Items)}}</span>
+                {{end}}
+            </div>
+            {{if and .Running (gt (runtimeSec .Items) 0.0)}}
+            <div class="progress-track">
+                <div class="progress-fill"
+                     data-attr:style="'width:' + Math.min(100, $showElapsedSec / {{runtimeSec .Items}} * 100) + '%'"></div>
+            </div>
+            {{end}}
+        </div>
+    </li>
+    {{end}}
+</ol>
+{{end}}

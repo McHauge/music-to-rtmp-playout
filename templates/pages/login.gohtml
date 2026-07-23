@@ -1,0 +1,48 @@
+{{define "page-login"}}
+<!DOCTYPE html>
+<html lang="en" data-theme="{{.Theme}}">
+{{template "head" .}}
+<body>
+    {{template "orbs" .}}
+    <div class="login-wrap">
+        <div class="login-card glass">
+            <h1 class="login-title">▶ Playout</h1>
+            {{if .Extra.Setup}}
+                <p class="login-sub">First run — create your operator account.</p>
+            {{else}}
+                <p class="login-sub">Sign in to manage your radio.</p>
+            {{end}}
+            {{if .Extra.Error}}<div class="alert-error">{{.Extra.Error}}</div>{{end}}
+
+            <form id="auth-form" method="POST" action="{{if .Extra.Setup}}/setup{{else}}/login{{end}}">
+                <label class="field">
+                    <span>Username</span>
+                    <input name="username" autocomplete="username" required autofocus>
+                </label>
+                <label class="field">
+                    <span>Password</span>
+                    <input id="pw" type="password" autocomplete="current-password" required>
+                </label>
+                <input type="hidden" name="password" id="pw-hash">
+                <button class="btn btn-primary btn-block" type="submit">
+                    {{if .Extra.Setup}}Create account{{else}}Sign in{{end}}
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <script>
+    // Hash the password client-side (SHA-256 hex) before submit, mirroring the
+    // server's expectation. The plaintext never leaves the browser.
+    document.getElementById('auth-form').addEventListener('submit', async function (e) {
+        e.preventDefault();
+        const pw = document.getElementById('pw').value;
+        const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(pw));
+        const hex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+        document.getElementById('pw-hash').value = hex;
+        e.target.submit();
+    });
+    </script>
+</body>
+</html>
+{{end}}

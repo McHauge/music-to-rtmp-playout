@@ -1,0 +1,125 @@
+{{define "page-settings"}}
+<!DOCTYPE html>
+<html lang="en" data-theme="{{.Theme}}">
+{{template "head" .}}
+<body>
+    {{template "orbs" .}}
+    <div class="wrapper">
+        {{template "navbar" .}}
+        <main class="page page-narrow">
+            <h1 class="page-title">Settings</h1>
+
+            <section class="card glass settings-card">
+                <form method="POST" action="/api/settings/save" enctype="multipart/form-data" class="settings-form">
+                    {{$st := .Extra.Settings}}
+
+                    <h2>RTMP target</h2>
+                    <label class="field">
+                        <span>RTMP URL</span>
+                        <input name="rtmp_url" value="{{$st.RTMPURL}}" placeholder="rtmp://localhost:1935/live/show">
+                    </label>
+                    <label class="field" data-signals="{showkey: false}">
+                        <span>Stream key (optional)</span>
+                        <div class="input-reveal">
+                            <input type="password" name="stream_key" value="{{$st.StreamKey}}" placeholder="appended to the URL"
+                                   autocomplete="off"
+                                   data-attr:type="$showkey ? 'text' : 'password'">
+                            <button type="button" class="reveal-btn"
+                                    data-on:click="$showkey = !$showkey"
+                                    data-attr:title="$showkey ? 'Hide stream key' : 'Show stream key'"
+                                    data-attr:aria-label="$showkey ? 'Hide stream key' : 'Show stream key'">
+                                <span data-show="!$showkey">👁</span>
+                                <span data-show="$showkey">🙈</span>
+                            </button>
+                        </div>
+                    </label>
+
+                    <h2>Encoder</h2>
+                    <label class="field">
+                        <span>Audio bitrate</span>
+                        <input name="audio_bitrate" value="{{$st.AudioBitrate}}" placeholder="160k">
+                    </label>
+                    <label class="field check-field">
+                        <input type="checkbox" name="video_enabled" data-bind:videoon {{if $st.VideoEnabled}}checked{{end}}>
+                        <span>Send video (off = audio-only stream)</span>
+                    </label>
+                    <div data-show="$videoon">
+                        {{$cur := printf "%dx%d" $st.VideoWidth $st.VideoHeight}}
+                        {{$preset := or (eq $cur "640x360") (eq $cur "854x480") (eq $cur "1280x720") (eq $cur "1920x1080")}}
+                        <div class="field-row">
+                            <label class="field">
+                                <span>Resolution</span>
+                                <select name="video_size" data-bind:vsize>
+                                    <option value="640x360" {{if eq $cur "640x360"}}selected{{end}}>360p (640×360)</option>
+                                    <option value="854x480" {{if eq $cur "854x480"}}selected{{end}}>480p (854×480)</option>
+                                    <option value="1280x720" {{if eq $cur "1280x720"}}selected{{end}}>720p (1280×720)</option>
+                                    <option value="1920x1080" {{if eq $cur "1920x1080"}}selected{{end}}>1080p (1920×1080)</option>
+                                    <option value="custom" {{if not $preset}}selected{{end}}>Custom…</option>
+                                </select>
+                            </label>
+                            <label class="field" data-show="$vsize == 'custom'">
+                                <span>Custom size</span>
+                                <input name="video_size_custom" value="{{$cur}}" placeholder="1280x720">
+                            </label>
+                        </div>
+                        <div class="field-row">
+                            <label class="field">
+                                <span>Video FPS</span>
+                                <input type="number" name="video_fps" value="{{$st.VideoFPS}}" min="1" max="60">
+                            </label>
+                            <label class="field">
+                                <span>Video bitrate (CBR)</span>
+                                <input name="video_bitrate" value="{{$st.VideoBitrate}}" placeholder="500k (blank = auto quality)">
+                            </label>
+                        </div>
+                        <label class="field check-field">
+                            <input type="checkbox" name="now_overlay" data-bind:nowbanner {{if $st.NowOverlay}}checked{{end}}>
+                            <span>Show "now playing" banner on the video</span>
+                        </label>
+                        <label class="field check-field" data-show="$nowbanner">
+                            <input type="checkbox" name="banner_box" {{if $st.BannerBox}}checked{{end}}>
+                            <span>Dark box behind the banner</span>
+                        </label>
+                        <label class="field" data-show="$nowbanner">
+                            <span>Banner visualization</span>
+                            <select name="viz_style">
+                                <option value="bars" {{if eq $st.VizStyle "bars"}}selected{{end}}>Frequency bars</option>
+                                <option value="wave" {{if eq $st.VizStyle "wave"}}selected{{end}}>Waveform</option>
+                                <option value="none" {{if eq $st.VizStyle "none"}}selected{{end}}>None (text + cover art only)</option>
+                            </select>
+                        </label>
+                        <label class="field">
+                            <span>Background image path</span>
+                            <input name="bg_image_path" value="{{$st.BgImagePath}}" placeholder="./assets/bg.png (blank = solid color)">
+                        </label>
+                        <label class="field">
+                            <span>…or upload a background image</span>
+                            <input type="file" name="bg_image_file" accept=".png,.jpg,.jpeg,.webp,.bmp"
+                                   data-on:change="if (evt.target.files.length) $bgpreview = URL.createObjectURL(evt.target.files[0])">
+                            <span class="muted small">Saved to the assets folder; overrides the path above when set.</span>
+                        </label>
+                        <div class="field bg-preview" data-signals="{bgpreview: '{{if $st.BgImagePath}}/api/settings/bg-preview{{end}}'}">
+                            <span>Preview</span>
+                            <img data-show="$bgpreview != ''" data-attr:src="$bgpreview" alt="Background preview">
+                            <span class="muted small" data-show="$bgpreview == ''">No background image — a solid color will be used.</span>
+                        </div>
+                    </div>
+
+                    <h2>Appearance</h2>
+                    <label class="field">
+                        <span>Theme</span>
+                        <select name="theme">
+                            {{range .Extra.Themes}}
+                            <option value="{{.Name}}" {{if eq .Name $st.Theme}}selected{{end}}>{{.Label}}</option>
+                            {{end}}
+                        </select>
+                    </label>
+
+                    <button class="btn btn-primary" type="submit">Save settings</button>
+                </form>
+            </section>
+        </main>
+    </div>
+</body>
+</html>
+{{end}}

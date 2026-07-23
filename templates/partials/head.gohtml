@@ -1,0 +1,19 @@
+{{define "head"}}
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>{{.Title}} · Playout</title>
+    <link rel="stylesheet" href="/static/vendor/fonts/fonts.css">
+    <script type="module" src="/static/vendor/datastar.js"></script>
+    {{template "theme-vars-all"}}
+    <link rel="stylesheet" href="/static/app.css">
+</head>
+{{end}}
+
+{{define "orbs"}}
+<div class="orb-container">
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
+    <div class="orb orb-3"></div>
+</div>
+{{end}}
