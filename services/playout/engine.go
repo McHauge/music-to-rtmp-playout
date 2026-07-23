@@ -215,7 +215,8 @@ func (e *Engine) send(c command) {
 }
 
 // TriggerClip overlays a pre-decoded PCM clip on the live program audio.
-func (e *Engine) TriggerClip(pcmPath string, gain float64) error {
+// Retriggering the same key restarts the clip instead of layering a copy.
+func (e *Engine) TriggerClip(key, pcmPath string, gain float64) error {
 	e.mu.Lock()
 	vm := e.vmix
 	running := e.running
@@ -223,7 +224,8 @@ func (e *Engine) TriggerClip(pcmPath string, gain float64) error {
 	if !running || vm == nil {
 		return errNotRunning
 	}
-	return vm.Trigger(pcmPath, gain)
+	log.Printf("playout: soundboard trigger key=%s (%d voices active)", key, vm.active())
+	return vm.Trigger(key, pcmPath, gain)
 }
 
 // run is the single owner of playback state. vmix is passed in (rather than

@@ -15,13 +15,21 @@ const (
 	// 20 ms chunk: low latency for soundboard/skip responsiveness.
 	chunkFrames = sampleRate / 50
 	chunkBytes  = chunkFrames * frameBytes
+	// 15 ms fade applied to a voice canceled by a retrigger, so the cut
+	// lands on a ramp instead of an audible mid-waveform pop.
+	retriggerFadeSamples = sampleRate * 15 / 1000 * channels
 )
 
 // voice is one playing soundboard clip mixed on top of the main stream.
 type voice struct {
+	key  string
 	pcm  []byte
 	pos  int
 	gain float64
+	// fadeTotal > 0 marks the voice as fading out; fadeRemain counts down
+	// the s16 samples left before it is dropped.
+	fadeTotal  int
+	fadeRemain int
 }
 
 // voiceMixer holds the set of currently-playing soundboard voices and mixes
@@ -32,13 +40,22 @@ type voiceMixer struct {
 }
 
 // Trigger loads a pre-decoded PCM clip from disk and starts it as a new voice.
-func (m *voiceMixer) Trigger(pcmPath string, gain float64) error {
+// Any voice already playing under the same key is faded out first, so
+// retriggering a clip restarts it from the top (hot-cue behavior) instead of
+// stacking a second copy.
+func (m *voiceMixer) Trigger(key, pcmPath string, gain float64) error {
 	data, err := os.ReadFile(pcmPath)
 	if err != nil {
 		return err
 	}
 	m.mu.Lock()
-	m.voices = append(m.voices, &voice{pcm: data, gain: gain})
+	for _, v := range m.voices {
+		if v.key == key && v.fadeTotal == 0 {
+			v.fadeTotal = retriggerFadeSamples
+			v.fadeRemain = retriggerFadeSamples
+		}
+	}
+	m.voices = append(m.voices, &voice{key: key, pcm: data, gain: gain})
 	m.mu.Unlock()
 	return nil
 }
@@ -67,14 +84,27 @@ func (m *voiceMixer) mixInto(dst []byte) {
 		if remaining < take {
 			take = remaining
 		}
+		if v.fadeTotal > 0 && v.fadeRemain < take {
+			take = v.fadeRemain
+		}
 		for i := 0; i < take; i++ {
 			di := i * 2
+			g := v.gain
+			if v.fadeTotal > 0 {
+				g *= float64(v.fadeRemain-i) / float64(v.fadeTotal)
+			}
 			main := int32(int16(binary.LittleEndian.Uint16(dst[di:])))
 			s := int16(binary.LittleEndian.Uint16(v.pcm[v.pos+di:]))
-			sum := main + int32(float64(s)*v.gain)
+			sum := main + int32(float64(s)*g)
 			binary.LittleEndian.PutUint16(dst[di:], uint16(int16(clip(sum))))
 		}
 		v.pos += take * 2
+		if v.fadeTotal > 0 {
+			v.fadeRemain -= take
+			if v.fadeRemain <= 0 {
+				continue
+			}
+		}
 		if v.pos < len(v.pcm) {
 			alive = append(alive, v)
 		}

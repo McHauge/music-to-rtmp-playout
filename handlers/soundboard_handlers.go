@@ -61,7 +61,7 @@ func (app *App) TriggerClip(w http.ResponseWriter, r *http.Request) {
 		sse.ConsoleError(errClipNotFound)
 		return
 	}
-	if err := app.Engine.TriggerClip(clip.PCMPath, 0.8); err != nil {
+	if err := app.Engine.TriggerClip(strconv.FormatInt(clip.ID, 10), clip.PCMPath, 0.8); err != nil {
 		sse.ConsoleError(err)
 		return
 	}
