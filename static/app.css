@@ -132,7 +132,7 @@ select option { background: #0a1628; }
 .flow-break { border-left-color: rgba(255,255,255,0.3); }
 .flow-gate { border-left-color: #f59e0b; }
 .flow-pos { font-size: 0.8rem; color: rgba(255,255,255,0.4); width: 1.5rem; text-align: center; }
-.flow-drag { cursor: grab; color: rgba(255,255,255,0.3); font-size: 0.85rem; letter-spacing: -2px; user-select: none; touch-action: none; }
+.flow-drag { cursor: grab; color: rgba(255,255,255,0.3); font-size: 0.85rem; letter-spacing: 2px; text-indent: 2px; user-select: none; touch-action: none; width: 1.6rem; text-align: center; flex-shrink: 0; margin-right: -0.35rem; }
 .flow-drag:active { cursor: grabbing; }
 .flow-ghost { opacity: 0.4; }
 .flow-item.clickable { cursor: pointer; }

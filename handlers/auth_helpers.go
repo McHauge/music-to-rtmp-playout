@@ -42,6 +42,26 @@ func (app *App) RequirePage(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// lastShowID returns the show the user last explicitly opened, or 0.
+func (app *App) lastShowID(r *http.Request) int64 {
+	session, _ := app.Store.Get(r, sessionName)
+	if v, ok := session.Values["last_show_id"].(int64); ok {
+		return v
+	}
+	return 0
+}
+
+// rememberShow stores the show id in the session so Flow and Stream reopen it
+// on later visits. No-op when the value is already current.
+func (app *App) rememberShow(w http.ResponseWriter, r *http.Request, id int64) {
+	if id == 0 || app.lastShowID(r) == id {
+		return
+	}
+	session, _ := app.Store.Get(r, sessionName)
+	session.Values["last_show_id"] = id
+	_ = session.Save(r, w)
+}
+
 // setSession stores the user id in an encrypted session cookie.
 func (app *App) setSession(w http.ResponseWriter, r *http.Request, id int64) error {
 	session, _ := app.Store.Get(r, sessionName)

@@ -72,6 +72,10 @@ func (app *App) ImportSpotify(w http.ResponseWriter, r *http.Request) {
 	ok, failed := 0, 0
 	for i, p := range pairs {
 		logf("[%d/%d] Searching: %s", i+1, len(pairs), p.Label())
+		if _, ok := p.SilenceSec(); ok {
+			logf("  silence track — skipped (not downloaded)")
+			continue
+		}
 		if _, err := app.Library.ImportSearch(p, "spotify", func(line string) { logf("%s", line) }); err != nil {
 			logf("  failed: %v", err)
 			failed++
@@ -138,6 +142,22 @@ func (app *App) ImportSpotifyToFlow(w http.ResponseWriter, r *http.Request) {
 	added := 0
 	for i, p := range pairs {
 		logf("[%d/%d] Searching: %s", i+1, len(pairs), p.Label())
+		// Silent filler tracks ("30 Seconds Of Silence") never get downloaded:
+		// with auto-breaks on, our own breaks already provide the spacing;
+		// otherwise the filler becomes a break of its own duration.
+		if sec, ok := p.SilenceSec(); ok {
+			if withBreaks {
+				logf("  silence track — skipped (using your %ds breaks instead)", breakSec)
+				continue
+			}
+			if sec <= 0 {
+				sec = 20
+			}
+			_, _ = app.Flow.AddItem(plID, services.ItemBreak, nil, sec, "", !manual)
+			logf("  silence track — added as a %ds break (no download)", sec)
+			needBreak = false
+			continue
+		}
 		track, err := app.Library.ImportSearch(p, "spotify", func(line string) { logf("%s", line) })
 		if err != nil {
 			logf("  skipped: %v", err)

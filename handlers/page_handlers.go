@@ -33,8 +33,9 @@ func (app *App) LibraryPage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// FlowPage shows the show list and, when ?id= is given, the flow builder for
-// that show.
+// FlowPage shows the show list and the flow builder for the selected show:
+// ?id= when given (and remembered for later visits), otherwise the live show,
+// the last-opened show, or the newest one.
 func (app *App) FlowPage(w http.ResponseWriter, r *http.Request) {
 	playlists, err := app.Flow.ListPlaylists()
 	if err != nil {
@@ -42,21 +43,35 @@ func (app *App) FlowPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	extra := map[string]any{"Playlists": playlists}
+	var id int64
+	explicit := r.URL.Query().Get("id") != ""
+	if explicit {
+		id, _ = strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
+	} else if status := app.Engine.Status(); status.Running && status.PlaylistID != 0 {
+		id = status.PlaylistID
+	} else {
+		id = app.lastShowID(r)
+	}
 
-	if idStr := r.URL.Query().Get("id"); idStr != "" {
-		if id, err := strconv.ParseInt(idStr, 10, 64); err == nil {
-			pl, _ := app.Flow.GetPlaylist(id)
-			if pl != nil {
-				items, _ := app.Flow.GetItems(id)
-				tracks, _ := app.Library.ListTracks()
-				runtime, _ := app.Flow.EstimateRuntimeSec(id)
-				extra["Selected"] = pl
-				extra["Tracks"] = tracks
-				extra["RuntimeSec"] = runtime
-				extra["Rundown"] = map[string]any{"Playlist": pl, "Items": items}
-			}
-		}
+	pl, _ := app.Flow.GetPlaylist(id)
+	if explicit && pl != nil {
+		app.rememberShow(w, r, pl.ID)
+	}
+	// Stale or absent selection: default to the newest show (list is ordered
+	// most-recently-updated first).
+	if pl == nil && !explicit && len(playlists) > 0 {
+		pl, _ = app.Flow.GetPlaylist(playlists[0].ID)
+	}
+
+	extra := map[string]any{"Playlists": playlists}
+	if pl != nil {
+		items, _ := app.Flow.GetItems(pl.ID)
+		tracks, _ := app.Library.ListTracks()
+		runtime, _ := app.Flow.EstimateRuntimeSec(pl.ID)
+		extra["Selected"] = pl
+		extra["Tracks"] = tracks
+		extra["RuntimeSec"] = runtime
+		extra["Rundown"] = map[string]any{"Playlist": pl, "Items": items}
 	}
 
 	app.render(w, "page-flow", PageData{
@@ -64,14 +79,28 @@ func (app *App) FlowPage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// StreamPage is the operator console. An optional ?play= query param
-// pre-selects that show in the start dropdown (deep link from the flow page).
+// StreamPage is the operator console. While live the start dropdown is pinned
+// to the streaming show; otherwise ?play= (deep link from the flow page) or the
+// last-opened show pre-selects it.
 func (app *App) StreamPage(w http.ResponseWriter, r *http.Request) {
 	playlists, _ := app.Flow.ListPlaylists()
 	st, _ := app.Settings.Get()
 	status := app.Engine.Status()
 	running := status.Running
-	playID, _ := strconv.ParseInt(r.URL.Query().Get("play"), 10, 64)
+
+	var playID int64
+	if running && status.PlaylistID != 0 {
+		playID = status.PlaylistID
+	} else if playStr := r.URL.Query().Get("play"); playStr != "" {
+		playID, _ = strconv.ParseInt(playStr, 10, 64)
+		if pl, _ := app.Flow.GetPlaylist(playID); pl != nil {
+			app.rememberShow(w, r, playID)
+		}
+	} else if id := app.lastShowID(r); id != 0 {
+		if pl, _ := app.Flow.GetPlaylist(id); pl != nil {
+			playID = id
+		}
+	}
 
 	// After a stop, preselect the last position so Start acts as "continue".
 	startAt := 0
@@ -144,10 +173,17 @@ func (app *App) SaveSettings(w http.ResponseWriter, r *http.Request) {
 		VideoBitrate: strings.TrimSpace(r.FormValue("video_bitrate")),
 		AudioBitrate: r.FormValue("audio_bitrate"),
 		NowOverlay:   r.FormValue("now_overlay") != "",
+		VizStyle:     r.FormValue("viz_style"),
+		BannerBox:    r.FormValue("banner_box") != "",
 		Theme:        r.FormValue("theme"),
 	}
 	if !IsValidTheme(st.Theme) {
 		st.Theme = "teal"
+	}
+	switch st.VizStyle {
+	case "bars", "wave", "none":
+	default:
+		st.VizStyle = "bars"
 	}
 	if err := app.Settings.Save(st); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

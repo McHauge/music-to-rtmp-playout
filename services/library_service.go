@@ -19,17 +19,18 @@ import (
 type LibraryService struct {
 	db          *sql.DB
 	mediaDir    string
+	ffmpegPath  string
 	ffprobePath string
 	ytdlpPath   string
 }
 
-func NewLibraryService(db *sql.DB, mediaDir, ffprobePath, ytdlpPath string) *LibraryService {
-	return &LibraryService{db: db, mediaDir: mediaDir, ffprobePath: ffprobePath, ytdlpPath: ytdlpPath}
+func NewLibraryService(db *sql.DB, mediaDir, ffmpegPath, ffprobePath, ytdlpPath string) *LibraryService {
+	return &LibraryService{db: db, mediaDir: mediaDir, ffmpegPath: ffmpegPath, ffprobePath: ffprobePath, ytdlpPath: ytdlpPath}
 }
 
 // ListTracks returns all tracks, most recently added first.
 func (s *LibraryService) ListTracks() ([]Track, error) {
-	rows, err := s.db.Query(`SELECT id, title, artist, source, file_path, duration_sec, added_at FROM tracks ORDER BY added_at DESC, id DESC`)
+	rows, err := s.db.Query(`SELECT id, title, artist, source, file_path, duration_sec, art_path, added_at FROM tracks ORDER BY added_at DESC, id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -37,7 +38,7 @@ func (s *LibraryService) ListTracks() ([]Track, error) {
 	var out []Track
 	for rows.Next() {
 		var t Track
-		if err := rows.Scan(&t.ID, &t.Title, &t.Artist, &t.Source, &t.FilePath, &t.DurationSec, &t.AddedAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.Title, &t.Artist, &t.Source, &t.FilePath, &t.DurationSec, &t.ArtPath, &t.AddedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, t)
@@ -48,8 +49,8 @@ func (s *LibraryService) ListTracks() ([]Track, error) {
 // GetTrack returns one track by id.
 func (s *LibraryService) GetTrack(id int64) (*Track, error) {
 	var t Track
-	err := s.db.QueryRow(`SELECT id, title, artist, source, file_path, duration_sec, added_at FROM tracks WHERE id = ?`, id).
-		Scan(&t.ID, &t.Title, &t.Artist, &t.Source, &t.FilePath, &t.DurationSec, &t.AddedAt)
+	err := s.db.QueryRow(`SELECT id, title, artist, source, file_path, duration_sec, art_path, added_at FROM tracks WHERE id = ?`, id).
+		Scan(&t.ID, &t.Title, &t.Artist, &t.Source, &t.FilePath, &t.DurationSec, &t.ArtPath, &t.AddedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -72,6 +73,9 @@ func (s *LibraryService) DeleteTrack(id int64) error {
 		return err
 	}
 	_ = os.Remove(t.FilePath) // best-effort; orphan files are harmless
+	if t.ArtPath != "" {
+		_ = os.Remove(t.ArtPath)
+	}
 	return nil
 }
 
@@ -106,7 +110,7 @@ func (s *LibraryService) AddUpload(origName string, src io.Reader) (*Track, erro
 	f.Close()
 
 	dur := s.probeDuration(dest)
-	return s.insertTrack(base, "", "upload", dest, dur)
+	return s.insertTrack(base, "", "upload", dest, dur, "")
 }
 
 // ImportYouTube downloads audio (and a playlist's worth, if the URL is a
@@ -132,6 +136,7 @@ func (s *LibraryService) importVia(url, source string, progress func(line string
 	args := []string{
 		"-x", "--audio-format", "mp3", "--audio-quality", "0",
 		"--write-info-json", "--no-progress",
+		"--write-thumbnail", "--convert-thumbnails", "png",
 		"--ignore-errors",
 		"-o", outTmpl,
 		url,
@@ -384,7 +389,8 @@ func (s *LibraryService) importInfoJSONs(source string, progress func(string)) (
 		if dur == 0 {
 			dur = s.probeDuration(audioPath)
 		}
-		if t, err := s.insertTrack(info.Title, artist, source, audioPath, dur); err == nil {
+		artPath := s.importArt(info.ID)
+		if t, err := s.insertTrack(info.Title, artist, source, audioPath, dur, artPath); err == nil {
 			out = append(out, *t)
 			if progress != nil {
 				progress("imported: " + info.Title)
@@ -398,9 +404,9 @@ func (s *LibraryService) importInfoJSONs(source string, progress func(string)) (
 // trackByPath returns the track whose file_path matches, or nil if none does.
 func (s *LibraryService) trackByPath(filePath string) (*Track, error) {
 	var t Track
-	err := s.db.QueryRow(`SELECT id, title, artist, source, file_path, duration_sec, added_at
+	err := s.db.QueryRow(`SELECT id, title, artist, source, file_path, duration_sec, art_path, added_at
 		FROM tracks WHERE file_path = ?`, filePath).
-		Scan(&t.ID, &t.Title, &t.Artist, &t.Source, &t.FilePath, &t.DurationSec, &t.AddedAt)
+		Scan(&t.ID, &t.Title, &t.Artist, &t.Source, &t.FilePath, &t.DurationSec, &t.ArtPath, &t.AddedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -410,17 +416,56 @@ func (s *LibraryService) trackByPath(filePath string) (*Track, error) {
 	return &t, nil
 }
 
-func (s *LibraryService) insertTrack(title, artist, source, filePath string, dur float64) (*Track, error) {
+func (s *LibraryService) insertTrack(title, artist, source, filePath string, dur float64, artPath string) (*Track, error) {
 	if title == "" {
 		title = filepath.Base(filePath)
 	}
-	res, err := s.db.Exec(`INSERT INTO tracks (title, artist, source, file_path, duration_sec) VALUES (?, ?, ?, ?, ?)`,
-		title, artist, source, filePath, dur)
+	res, err := s.db.Exec(`INSERT INTO tracks (title, artist, source, file_path, duration_sec, art_path) VALUES (?, ?, ?, ?, ?, ?)`,
+		title, artist, source, filePath, dur, artPath)
 	if err != nil {
 		return nil, err
 	}
 	id, _ := res.LastInsertId()
-	return &Track{ID: id, Title: title, Artist: artist, Source: source, FilePath: filePath, DurationSec: dur, AddedAt: time.Now()}, nil
+	return &Track{ID: id, Title: title, Artist: artist, Source: source, FilePath: filePath, DurationSec: dur, ArtPath: artPath, AddedAt: time.Now()}, nil
+}
+
+// importArt locates the thumbnail yt-dlp wrote for a video id, normalizes it to
+// the canonical square cover art, and returns the art path ("" when no
+// thumbnail landed or normalization failed). The raw thumbnail is removed
+// either way.
+func (s *LibraryService) importArt(videoID string) string {
+	var raw string
+	for _, ext := range []string{".png", ".webp", ".jpg", ".jpeg"} {
+		cand := filepath.Join(s.mediaDir, videoID+ext)
+		if _, err := os.Stat(cand); err == nil {
+			raw = cand
+			break
+		}
+	}
+	if raw == "" {
+		return ""
+	}
+	dest := filepath.Join(s.mediaDir, videoID+".art.png")
+	err := s.normalizeArt(raw, dest)
+	_ = os.Remove(raw)
+	if err != nil {
+		return ""
+	}
+	return dest
+}
+
+// normalizeArt center-crops an image to a square and scales it to the exact
+// canonical size the live banner art swap requires (the encoder's image input
+// must never change dimensions mid-stream).
+func (s *LibraryService) normalizeArt(src, dest string) error {
+	cmd := exec.Command(s.ffmpegPath, "-y", "-hide_banner", "-loglevel", "error",
+		"-i", src,
+		"-vf", "crop='min(iw,ih)':'min(iw,ih)',scale=300:300",
+		"-frames:v", "1", dest)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("art normalize failed: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // probeDuration returns the media duration in seconds using ffprobe, or 0 on error.

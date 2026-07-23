@@ -19,9 +19,11 @@ var (
 // StartStream begins streaming the given playlist (?id=), optionally from the
 // flow item at ?at= (clamped by the engine).
 func (app *App) StartStream(w http.ResponseWriter, r *http.Request) {
-	sse := datastar.NewSSE(w, r)
 	id, _ := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
 	at, _ := strconv.Atoi(r.URL.Query().Get("at"))
+	// Before NewSSE — the session cookie must go out with the response headers.
+	app.rememberShow(w, r, id)
+	sse := datastar.NewSSE(w, r)
 
 	pl, _ := app.Flow.GetPlaylist(id)
 	if pl == nil {
@@ -134,8 +136,10 @@ func (app *App) StreamSetAutoNext(w http.ResponseWriter, r *http.Request) {
 // StreamRundown re-renders the stopped-state rundown for the playlist picked
 // in the start dropdown (?id=), resetting the start-at selection.
 func (app *App) StreamRundown(w http.ResponseWriter, r *http.Request) {
-	sse := datastar.NewSSE(w, r)
 	id, _ := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
+	// Before NewSSE — the session cookie must go out with the response headers.
+	app.rememberShow(w, r, id)
+	sse := datastar.NewSSE(w, r)
 	sse.MarshalAndPatchSignals(map[string]any{"startAt": 0})
 	app.patchRundown(sse, id)
 }
@@ -173,10 +177,12 @@ func (app *App) StreamStatus(w http.ResponseWriter, r *http.Request) {
 	ch, unsub := app.Engine.Subscribe()
 	defer unsub()
 
-	// Initial paint.
+	// Initial paint. The rundown uses the remembered show so this patch doesn't
+	// clobber the page's server-rendered selection with the engine's last show
+	// (while live, patchRundown uses the engine snapshot and ignores the id).
 	app.patchStatus(sse)
 	last := statusRundownKey(app.Engine.Status())
-	app.patchRundown(sse, 0)
+	app.patchRundown(sse, app.lastShowID(r))
 
 	for {
 		select {

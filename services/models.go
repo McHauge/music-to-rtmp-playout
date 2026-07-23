@@ -10,6 +10,7 @@ type Track struct {
 	Source      string // "youtube" | "upload"
 	FilePath    string
 	DurationSec float64
+	ArtPath     string // normalized square cover art (300x300 png); "" = none
 	AddedAt     time.Time
 }
 
@@ -72,7 +73,9 @@ type Settings struct {
 	VideoEnabled bool   // false = audio-only stream, no video track
 	VideoBitrate string // CBR rate; empty = auto (CRF)
 	AudioBitrate string
-	NowOverlay   bool // show the "now playing" drawtext overlay
+	NowOverlay   bool   // show the "now playing" lower-third banner
+	VizStyle     string // banner visualization: "bars" | "wave" | "none"
+	BannerBox    bool   // translucent box behind the banner
 	Theme        string
 }
 

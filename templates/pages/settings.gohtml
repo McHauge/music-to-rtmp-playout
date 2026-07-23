@@ -73,8 +73,20 @@
                             </label>
                         </div>
                         <label class="field check-field">
-                            <input type="checkbox" name="now_overlay" {{if $st.NowOverlay}}checked{{end}}>
-                            <span>Show "now playing" overlay on the video</span>
+                            <input type="checkbox" name="now_overlay" data-bind:nowbanner {{if $st.NowOverlay}}checked{{end}}>
+                            <span>Show "now playing" banner on the video</span>
+                        </label>
+                        <label class="field check-field" data-show="$nowbanner">
+                            <input type="checkbox" name="banner_box" {{if $st.BannerBox}}checked{{end}}>
+                            <span>Dark box behind the banner</span>
+                        </label>
+                        <label class="field" data-show="$nowbanner">
+                            <span>Banner visualization</span>
+                            <select name="viz_style">
+                                <option value="bars" {{if eq $st.VizStyle "bars"}}selected{{end}}>Frequency bars</option>
+                                <option value="wave" {{if eq $st.VizStyle "wave"}}selected{{end}}>Waveform</option>
+                                <option value="none" {{if eq $st.VizStyle "none"}}selected{{end}}>None (text + cover art only)</option>
+                            </select>
                         </label>
                         <label class="field">
                             <span>Background image path</span>

@@ -40,6 +40,35 @@ func (t SpotifyTrack) Label() string {
 	return t.Artist + " - " + t.Title
 }
 
+// silenceTitleRe matches silent-filler titles like "30 Seconds Of Silence" or
+// "1 Minute of Silence", capturing the count and unit.
+var silenceTitleRe = regexp.MustCompile(`(?i)^(\d+)\s*(sec(?:ond)?s?|min(?:ute)?s?)\s+of\s+silence$`)
+
+// SilenceSec reports whether the track is a silent playlist filler ("30
+// Seconds Of Silence") and returns the intended silence duration in seconds
+// (0 when unknown). A bare "Silence" title only counts when the track is
+// short, since real songs share that name.
+func (t SpotifyTrack) SilenceSec() (int, bool) {
+	title := strings.TrimSpace(t.Title)
+	if m := silenceTitleRe.FindStringSubmatch(title); m != nil {
+		if t.DurationSec > 0 {
+			return t.DurationSec, true
+		}
+		n, _ := strconv.Atoi(m[1])
+		if strings.HasPrefix(strings.ToLower(m[2]), "min") {
+			n *= 60
+		}
+		return n, true
+	}
+	switch strings.ToLower(title) {
+	case "silence", "silent track", "pure silence":
+		if t.DurationSec > 0 && t.DurationSec <= 90 {
+			return t.DurationSec, true
+		}
+	}
+	return 0, false
+}
+
 // ErrSpotifyPlaylistUnavailable marks a 404 from the playlist endpoint. Since
 // late 2024 the Spotify Web API returns 404 for Spotify-made editorial and
 // algorithmic playlists (and for private ones) when accessed by third-party

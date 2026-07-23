@@ -40,9 +40,10 @@ type Status struct {
 
 // EngineConfig holds static dependencies for the engine.
 type EngineConfig struct {
-	FFmpegPath string
-	NowTxtPath string
-	FontFile   string
+	FFmpegPath  string
+	NowTxtPath  string
+	ArtLivePath string
+	FontFile    string
 }
 
 // Engine owns the single live show. All playback state lives in the run
@@ -118,6 +119,7 @@ func (e *Engine) Start(items []services.FlowItem, set services.Settings, playlis
 		RTMPURL:      set.FullRTMPURL(),
 		BgImagePath:  set.BgImagePath,
 		NowTxtPath:   e.cfg.NowTxtPath,
+		ArtLivePath:  e.cfg.ArtLivePath,
 		FontFile:     e.cfg.FontFile,
 		Width:        set.VideoWidth,
 		Height:       set.VideoHeight,
@@ -126,6 +128,8 @@ func (e *Engine) Start(items []services.FlowItem, set services.Settings, playlis
 		VideoBitrate: set.VideoBitrate,
 		AudioBitrate: set.AudioBitrate,
 		NowOverlay:   set.NowOverlay,
+		VizStyle:     set.VizStyle,
+		BannerBox:    set.BannerBox,
 	}
 	enc, err := startEncoder(encCfg)
 	if err != nil {
@@ -244,6 +248,14 @@ func (e *Engine) run(enc *encoder, items []services.FlowItem, vmix *voiceMixer, 
 	lead := int64(sampleRate * 300 / 1000) // 300ms startup lead
 	written := int64(0)                    // frames written
 	lastText := ""
+	lastArt := "\x00" // sentinel: first publish always installs the art/placeholder
+
+	// Banner fade state: fadeAlpha animates toward 1 (shown) / 0 (hidden) over
+	// fadeDur; quantized levels are pushed to the encoder's fade mask.
+	const fadeDur = 0.6 // seconds for a full fade in/out
+	fadeAlpha := 0.0    // encoder starts with the mask at 0 (hidden)
+	fadeWritten := 0
+	lastFadeTick := time.Now()
 
 	publish := func() {
 		s := Status{
@@ -266,11 +278,31 @@ func (e *Engine) run(enc *encoder, items []services.FlowItem, vmix *voiceMixer, 
 		}
 		e.setStatus(s)
 
-		// Overlay text: the current song's display while playing, blank otherwise.
-		text := p.overlayText()
-		if text != lastText {
-			enc.SetNowPlaying(text)
-			lastText = text
+		// Banner: fade toward shown/hidden, and sync the text/art content only
+		// while shown or fully hidden — never mid-fade-out, so the outgoing
+		// song's banner keeps its content while it disappears.
+		visible := p.bannerVisible()
+		if visible || fadeAlpha == 0 {
+			text := p.overlayText()
+			if text != lastText {
+				enc.SetNowPlaying(text)
+				lastText = text
+			}
+			art := p.overlayArt()
+			if art != lastArt && enc.SetNowArt(art) {
+				lastArt = art // on swap failure, retry next tick
+			}
+		}
+		now := time.Now()
+		step := now.Sub(lastFadeTick).Seconds() / fadeDur
+		lastFadeTick = now
+		if visible {
+			fadeAlpha = min(1, fadeAlpha+step)
+		} else {
+			fadeAlpha = max(0, fadeAlpha-step)
+		}
+		if q := int(fadeAlpha*fadeLevels + 0.5); q != fadeWritten && enc.SetBannerFade(q) {
+			fadeWritten = q // on swap failure, retry next tick
 		}
 	}
 	publish()

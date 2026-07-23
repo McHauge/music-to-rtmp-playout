@@ -29,6 +29,7 @@ func initDB(db *sql.DB) error {
 			source TEXT NOT NULL DEFAULT 'upload',   -- 'youtube' | 'upload' | 'spotify'
 			file_path TEXT NOT NULL,
 			duration_sec REAL NOT NULL DEFAULT 0,
+			art_path TEXT NOT NULL DEFAULT '',        -- normalized square cover art (300x300 png)
 			added_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
 
@@ -72,6 +73,8 @@ func initDB(db *sql.DB) error {
 			video_bitrate TEXT NOT NULL DEFAULT '500k', -- CBR; empty = auto (CRF)
 			audio_bitrate TEXT NOT NULL DEFAULT '160k',
 			now_overlay INTEGER NOT NULL DEFAULT 1,   -- bool: "now playing" overlay
+			viz_style TEXT NOT NULL DEFAULT 'bars',   -- banner visualization: 'bars' | 'wave' | 'none'
+			banner_box INTEGER NOT NULL DEFAULT 1,    -- bool: translucent box behind the banner
 			theme TEXT NOT NULL DEFAULT 'teal'
 		)`,
 		`INSERT OR IGNORE INTO settings (id) VALUES (1)`,
@@ -100,6 +103,15 @@ func initDB(db *sql.DB) error {
 		return err
 	}
 	if err := ensureColumn(db, "settings", "now_overlay INTEGER NOT NULL DEFAULT 1"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "settings", "viz_style TEXT NOT NULL DEFAULT 'bars'"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "settings", "banner_box INTEGER NOT NULL DEFAULT 1"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "tracks", "art_path TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 

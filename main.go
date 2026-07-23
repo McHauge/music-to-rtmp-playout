@@ -64,7 +64,7 @@ func main() {
 	if err := authSvc.EnsureAdmin(cfg.AdminUsername, cfg.AdminPassword); err != nil {
 		log.Printf("admin bootstrap: %v", err)
 	}
-	librarySvc := services.NewLibraryService(db, cfg.MediaDir, cfg.FFprobePath, cfg.YtDlpPath)
+	librarySvc := services.NewLibraryService(db, cfg.MediaDir, cfg.FFmpegPath, cfg.FFprobePath, cfg.YtDlpPath)
 	flowSvc := services.NewFlowService(db)
 	soundboardSvc := services.NewSoundboardService(db, cfg.SoundboardDir, cfg.FFmpegPath)
 	settingsSvc := services.NewSettingsService(db)
@@ -92,8 +92,9 @@ func main() {
 	}
 
 	engine := playout.NewEngine(playout.EngineConfig{
-		FFmpegPath: cfg.FFmpegPath,
-		NowTxtPath: filepath.Join(cfg.AssetsDir, "now.txt"),
+		FFmpegPath:  cfg.FFmpegPath,
+		NowTxtPath:  filepath.Join(cfg.AssetsDir, "now.txt"),
+		ArtLivePath: filepath.Join(cfg.AssetsDir, "art_live.png"),
 	})
 
 	tmpl, err := handlers.LoadTemplates("./templates")

@@ -81,7 +81,7 @@ func (s *FlowService) DeletePlaylist(id int64) error {
 func (s *FlowService) GetItems(playlistID int64) ([]FlowItem, error) {
 	rows, err := s.db.Query(`
 		SELECT fi.id, fi.playlist_id, fi.position, fi.type, fi.track_id, fi.break_sec, fi.label, fi.auto_next,
-		       t.id, t.title, t.artist, t.source, t.file_path, t.duration_sec
+		       t.id, t.title, t.artist, t.source, t.file_path, t.duration_sec, t.art_path
 		FROM flow_items fi
 		LEFT JOIN tracks t ON t.id = fi.track_id
 		WHERE fi.playlist_id = ?
@@ -97,10 +97,10 @@ func (s *FlowService) GetItems(playlistID int64) ([]FlowItem, error) {
 		var trackID sql.NullInt64
 		var autoNext int
 		var tID sql.NullInt64
-		var tTitle, tArtist, tSource, tPath sql.NullString
+		var tTitle, tArtist, tSource, tPath, tArt sql.NullString
 		var tDur sql.NullFloat64
 		if err := rows.Scan(&it.ID, &it.PlaylistID, &it.Position, &it.Type, &trackID, &it.BreakSec, &it.Label, &autoNext,
-			&tID, &tTitle, &tArtist, &tSource, &tPath, &tDur); err != nil {
+			&tID, &tTitle, &tArtist, &tSource, &tPath, &tDur, &tArt); err != nil {
 			return nil, err
 		}
 		it.AutoNext = autoNext != 0
@@ -112,6 +112,7 @@ func (s *FlowService) GetItems(playlistID int64) ([]FlowItem, error) {
 			it.Track = &Track{
 				ID: tID.Int64, Title: tTitle.String, Artist: tArtist.String,
 				Source: tSource.String, FilePath: tPath.String, DurationSec: tDur.Float64,
+				ArtPath: tArt.String,
 			}
 		}
 		out = append(out, it)

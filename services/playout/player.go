@@ -286,15 +286,49 @@ func (p *player) nextUpDesc() string {
 	return services.Describe(p.items[ni])
 }
 
-// overlayText is the now-playing string burned into the video. Only songs show
-// text; breaks/gates/holds blank it.
+// overlayText is the now-playing string burned into the video banner. Only
+// songs show text; breaks/gates/holds blank it.
 func (p *player) overlayText() string {
-	if p.finished || p.holding || p.paused || p.idx >= len(p.items) {
-		return " "
-	}
-	it := p.items[p.idx]
-	if it.Type == services.ItemSong && it.Track != nil {
-		return it.Track.Display()
+	if t := p.overlayTrack(); t != nil {
+		if t.Artist != "" {
+			return t.Artist + " - " + t.Title
+		}
+		return t.Title
 	}
 	return " "
+}
+
+// overlayArt is the current song's cover-art path for the banner tile, or ""
+// (→ placeholder) when nothing should show.
+func (p *player) overlayArt() string {
+	if t := p.overlayTrack(); t != nil {
+		return t.ArtPath
+	}
+	return ""
+}
+
+// overlayTrack returns the track the banner should describe, or nil when the
+// banner should be hidden.
+func (p *player) overlayTrack() *services.Track {
+	if !p.bannerVisible() {
+		return nil
+	}
+	return p.items[p.idx].Track
+}
+
+// bannerVisible reports whether the now-playing banner should be shown: a song
+// that is playing, or paused mid-play. Breaks, gates/holds, the end of the
+// flow, and a song that is cued but never started (paused at 0:00) hide it.
+func (p *player) bannerVisible() bool {
+	if p.finished || p.holding || p.idx >= len(p.items) {
+		return false
+	}
+	it := p.items[p.idx]
+	if it.Type != services.ItemSong || it.Track == nil {
+		return false
+	}
+	if p.paused && p.itemBytes == 0 {
+		return false // cued, not yet started
+	}
+	return true
 }

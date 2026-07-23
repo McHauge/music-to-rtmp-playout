@@ -17,10 +17,13 @@ import (
 // and pushes FLV to the RTMP target. It must stay up for the whole show; the
 // mixer keeps feeding it PCM (silence during gaps) so it never starves.
 type encoder struct {
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	nowTxt string
-	done   chan struct{}
+	cmd      *exec.Cmd
+	stdin    io.WriteCloser
+	nowTxt   string
+	artLive  string // live-swapped banner art; "" when the banner is off
+	fadeLive string // live-swapped banner fade mask (uniform-alpha png)
+	bannerOn bool
+	done     chan struct{}
 }
 
 // encoderConfig captures everything the encoder ffmpeg needs.
@@ -29,6 +32,7 @@ type encoderConfig struct {
 	RTMPURL      string
 	BgImagePath  string
 	NowTxtPath   string
+	ArtLivePath  string // square cover art swapped per song (banner)
 	FontFile     string
 	Width        int
 	Height       int
@@ -36,7 +40,9 @@ type encoderConfig struct {
 	VideoEnabled bool   // false = audio-only stream, no video track
 	VideoBitrate string // CBR rate; empty = auto (CRF)
 	AudioBitrate string
-	NowOverlay   bool // draw the "now playing" text overlay
+	NowOverlay   bool   // draw the "now playing" lower-third banner
+	VizStyle     string // banner visualization: "bars" | "wave" | "none"
+	BannerBox    bool   // translucent box behind the banner
 }
 
 // startEncoder launches the persistent ffmpeg and returns it with stdin open.
@@ -54,8 +60,15 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 		c.AudioBitrate = "160k"
 	}
 	if c.FontFile == "" {
-		c.FontFile = findFont()
+		c.FontFile = findBoldFont()
 	}
+
+	banner := c.VideoEnabled && c.NowOverlay
+	// audioInGraph: the visualization taps the program audio inside the
+	// filtergraph, so the output audio must come from a graph label ([aout])
+	// instead of a direct -map 0:a + -af chain.
+	audioInGraph := banner && c.VizStyle != "none"
+	geom := bannerLayout(c.Width, c.Height)
 
 	// drawtext needs the textfile to exist before the process starts.
 	if err := os.MkdirAll(filepath.Dir(c.NowTxtPath), 0o755); err != nil {
@@ -63,6 +76,29 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 	}
 	if err := os.WriteFile(c.NowTxtPath, []byte(" "), 0o644); err != nil {
 		return nil, err
+	}
+	fadeLivePath := ""
+	if banner {
+		// The art and fade-mask input files must exist (at their canonical
+		// sizes) before ffmpeg starts; the first publish swaps in the real
+		// cover and fades the banner in once a song actually starts.
+		if err := os.WriteFile(c.ArtLivePath, placeholderPNG(), 0o644); err != nil {
+			return nil, err
+		}
+		fadeLivePath = filepath.Join(filepath.Dir(c.ArtLivePath), "banner_fade.png")
+		if err := os.WriteFile(fadeLivePath, uniformAlphaPNG(0), 0o644); err != nil {
+			return nil, err
+		}
+	}
+	vizMaskPath := ""
+	if audioInGraph {
+		// Static pill mask for the visualization, supersampled 4x and
+		// scaled down in the graph for smooth capsule edges.
+		vizMaskPath = filepath.Join(filepath.Dir(c.ArtLivePath), "viz_mask.png")
+		mask := pillMaskPNG(geom.pillsW*4, geom.vizH*4, (geom.pill+geom.pillGap)*4, geom.pill*4)
+		if err := os.WriteFile(vizMaskPath, mask, 0o644); err != nil {
+			return nil, err
+		}
 	}
 
 	args := []string{"-hide_banner", "-loglevel", "warning",
@@ -81,39 +117,58 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 		} else {
 			args = append(args, colorInput(c)...)
 		}
-
-		chain := ""
-		if c.NowOverlay {
-			drawtext := "drawtext="
-			if c.FontFile != "" {
-				drawtext += "fontfile=" + escapeFilterPath(c.FontFile) + ":"
+		if banner {
+			// Cover art (input 2) and fade mask (input 3). image2 with -loop 1
+			// re-reads the file on every loop iteration, so an atomic rename
+			// swaps the content mid-stream. -thread_queue_size 1 keeps the
+			// demuxer from reading ahead, so a swap shows within ~2 frames;
+			// re-decoding these tiny PNGs at the video rate is negligible.
+			args = append(args,
+				"-thread_queue_size", "1", "-loop", "1", "-framerate", itoa(c.FPS), "-f", "image2", "-i", c.ArtLivePath,
+				"-thread_queue_size", "1", "-loop", "1", "-framerate", itoa(c.FPS), "-f", "image2", "-i", fadeLivePath,
+			)
+			if audioInGraph {
+				// Static for the whole show, but fed at the video rate: a
+				// slower rate (e.g. 1fps) makes the blend's framesync
+				// intermittently drop the mask for whole seconds.
+				args = append(args, "-thread_queue_size", "1", "-loop", "1", "-framerate", itoa(c.FPS), "-f", "image2", "-i", vizMaskPath)
 			}
-			drawtext += "textfile=" + escapeFilterPath(c.NowTxtPath) +
-				":reload=1:expansion=none:x=(w-text_w)/2:y=h-120:fontsize=40:fontcolor=white:box=1:boxcolor=black@0.5:boxborderw=12"
-			chain = drawtext + ","
 		}
 
-		filter := fmt.Sprintf("[1:v]%sscale=%d:%d,format=yuv420p,fps=%d[v]", chain, c.Width, c.Height, c.FPS)
+		filter := buildVideoFilter(c, geom, banner, audioInGraph)
 
-		gop := c.FPS * 2
+		gop := c.FPS
+		args = append(args, "-filter_complex", filter, "-map", "[v]")
+		if audioInGraph {
+			args = append(args, "-map", "[aout]")
+		} else {
+			args = append(args, "-map", "0:a")
+		}
+		// No -tune stillimage: with the banner's animated visualization the
+		// frame has a permanently moving region, and stillimage's psy tuning
+		// makes x264 take many seconds to re-sharpen it after the banner
+		// fades in under a tight CBR budget. preset medium is still cheap at
+		// these low frame rates and buys sharper pills per bit.
 		args = append(args,
-			"-filter_complex", filter,
-			"-map", "[v]", "-map", "0:a",
-			"-c:v", "libx264", "-preset", "veryfast", "-tune", "stillimage",
+			"-c:v", "libx264", "-preset", "medium",
 			"-pix_fmt", "yuv420p", "-r", itoa(c.FPS), "-g", itoa(gop),
 			"-fps_mode", "cfr",
 		)
 		if c.VideoBitrate != "" {
-			// CBR (min=max=target + HRD filler): the video is just a "signal
-			// present" still, so a steady low rate beats quality-driven spikes.
+			// CBR on the wire (min=max=target + HRD filler). The 4x-rate VBV
+			// buffer gives rate control enough burst headroom to re-sharpen
+			// the banner right after it fades in instead of smearing it for
+			// seconds; the line rate itself stays constant.
 			args = append(args, "-b:v", c.VideoBitrate, "-minrate", c.VideoBitrate, "-maxrate", c.VideoBitrate,
-				"-bufsize", doubleRate(c.VideoBitrate), "-x264-params", "nal-hrd=cbr")
+				"-bufsize", scaleRate(c.VideoBitrate, 4), "-x264-params", "nal-hrd=cbr")
 		}
 	}
 
+	args = append(args, "-c:a", "aac", "-b:a", c.AudioBitrate, "-ar", "48000", "-ac", "2")
+	if !audioInGraph {
+		args = append(args, "-af", "aresample=async=1:first_pts=0")
+	}
 	args = append(args,
-		"-c:a", "aac", "-b:a", c.AudioBitrate, "-ar", "48000", "-ac", "2",
-		"-af", "aresample=async=1:first_pts=0",
 		// -shortest: the looping video never EOFs on its own, so tie output
 		// length to the audio pipe. Closing stdin then ends the stream cleanly
 		// (finalizing the FLV trailer) instead of requiring a hard kill.
@@ -132,7 +187,7 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 		return nil, fmt.Errorf("encoder ffmpeg start failed: %w", err)
 	}
 
-	e := &encoder{cmd: cmd, stdin: stdin, nowTxt: c.NowTxtPath, done: make(chan struct{})}
+	e := &encoder{cmd: cmd, stdin: stdin, nowTxt: c.NowTxtPath, artLive: c.ArtLivePath, fadeLive: fadeLivePath, bannerOn: banner, done: make(chan struct{})}
 	go func() { _ = cmd.Wait(); close(e.done) }()
 	return e, nil
 }
@@ -144,16 +199,76 @@ func (e *encoder) Write(p []byte) error {
 }
 
 // SetNowPlaying atomically updates the overlay text (temp file + rename) so
-// drawtext never reads a half-written line.
+// drawtext never reads a half-written line. The banner renders uppercase
+// (drawtext has no text-transform, so it happens here).
 func (e *encoder) SetNowPlaying(text string) {
 	if text == "" {
 		text = " "
 	}
+	text = strings.ToUpper(text)
 	tmp := e.nowTxt + ".tmp"
 	if err := os.WriteFile(tmp, []byte(text), 0o644); err != nil {
 		return
 	}
 	_ = os.Rename(tmp, e.nowTxt)
+}
+
+// SetNowArt atomically swaps the banner cover art (temp file + rename, like
+// SetNowPlaying). src must be a normalized artSize×artSize PNG — anything else
+// would break the running filter graph; "" (or an unreadable file) restores the
+// placeholder. Returns false if the swap could not be completed (caller may
+// retry).
+func (e *encoder) SetNowArt(src string) bool {
+	if !e.bannerOn {
+		return true
+	}
+	data := placeholderPNG()
+	if src != "" {
+		if b, err := os.ReadFile(src); err == nil {
+			data = b
+		}
+	}
+	return swapFile(e.artLive, data)
+}
+
+// fadeLevels quantizes banner fade alpha; level 0 = hidden, fadeLevels = shown.
+const fadeLevels = 15
+
+// SetBannerFade atomically swaps the fade mask to level (0..fadeLevels). The
+// engine steps the level over time to animate the banner in and out. Returns
+// false if the swap could not be completed — the caller must retry, or the
+// banner would stick at a stale fade level.
+func (e *encoder) SetBannerFade(level int) bool {
+	if !e.bannerOn {
+		return true
+	}
+	if level < 0 {
+		level = 0
+	}
+	if level > fadeLevels {
+		level = fadeLevels
+	}
+	return swapFile(e.fadeLive, uniformAlphaPNG(uint8(level*255/fadeLevels)))
+}
+
+// swapFile atomically replaces path with data (temp file + rename), reporting
+// success. The rename can transiently collide with ffmpeg's periodic re-read
+// of the file on Windows, hence the short retry.
+func swapFile(path string, data []byte) bool {
+	if data == nil {
+		return false
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return false
+	}
+	for i := 0; i < 3; i++ {
+		if err := os.Rename(tmp, path); err == nil {
+			return true
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return false
 }
 
 // Stop closes stdin (audio EOF → -shortest ends the stream and finalizes the
@@ -178,6 +293,143 @@ func colorInput(c encoderConfig) []string {
 		fmt.Sprintf("color=c=0x0a1628:s=%dx%d:r=%d", c.Width, c.Height, c.FPS)}
 }
 
+// bannerGeom is the lower-third layout: the bar's position in final output
+// pixels (inset into the title-safe area, 5% margin from the left/right/bottom
+// edges), and the art/text/viz placement in bar-relative pixels. The banner is
+// composed on its own bar-sized canvas so text and viz clip at the bar's edge
+// instead of spilling over it.
+type bannerGeom struct {
+	barX, barY, barW, barH int // bar placement in the output frame
+	art                    int // art tile side (== barH, at the bar's left end)
+	textX, textY, fontSize int // bar-relative
+	vizX, vizY, vizW, vizH int // bar-relative
+
+	// Pill grid for the bars visualization: capsule columns of width pill
+	// every pill+pillGap pixels, pillBars of them spanning pillsW, starting at
+	// pillsX (the viz region's width rounded down to whole pills, centered).
+	pill, pillGap            int
+	pillBars, pillsW, pillsX int
+}
+
+func bannerLayout(w, h int) bannerGeom {
+	even := func(n int) int { return n &^ 1 }
+	g := bannerGeom{}
+	marginX := even(w * 5 / 100)
+	marginY := even(h * 5 / 100)
+	g.barH = even(h * 16 / 100)
+	g.barX = marginX
+	g.barW = even(w - 2*marginX)
+	g.barY = h - g.barH - marginY
+	g.art = g.barH
+	pad := w * 15 / 1000
+	g.textX = g.art + pad
+	g.textY = g.barH * 14 / 100
+	g.fontSize = g.barH * 30 / 100
+	g.vizX = g.textX
+	g.vizW = even(g.barW - g.textX - pad)
+	g.vizH = even(g.barH * 40 / 100)
+	g.vizY = g.barH - g.vizH - g.barH*10/100
+
+	g.pill = g.vizH * 10 / 100
+	if g.pill < 3 {
+		g.pill = 3
+	}
+	g.pillGap = g.pill * 3 / 4
+	if g.pillGap < 2 {
+		g.pillGap = 2
+	}
+	period := g.pill + g.pillGap
+	g.pillBars = g.vizW / period
+	g.pillsW = g.pillBars * period
+	g.pillsX = g.vizX + (g.vizW-g.pillsW)/2
+	return g
+}
+
+// buildVideoFilter assembles the filter_complex for the video output. Inputs:
+// [1:v] background (still or lavfi color), [2:v] cover art and [3:v] fade mask
+// (banner only), [0:a] program PCM (tapped only when a visualization is on —
+// audioInGraph). The background is scaled to the output size FIRST so the
+// banner overlays in final pixel space; the banner itself is built on a
+// translucent bar-sized canvas so its contents clip at the bar's bounds, then
+// the fade mask multiplies its alpha so the engine can fade it in/out.
+func buildVideoFilter(c encoderConfig, g bannerGeom, banner, audioInGraph bool) string {
+	if !banner {
+		return fmt.Sprintf("[1:v]scale=%d:%d,setsar=1,format=yuv420p,fps=%d[v]", c.Width, c.Height, c.FPS)
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "[1:v]scale=%d:%d,setsar=1,fps=%d[bg];", c.Width, c.Height, c.FPS)
+	fmt.Fprintf(&b, "[2:v]scale=%d:%d[art];", g.art, g.art)
+	fmt.Fprintf(&b, "[3:v]scale=%d:%d,format=rgba[fmask];", g.barW, g.barH)
+	// The banner canvas: the translucent box, or a fully transparent surface
+	// of the same size when the box is turned off.
+	boxColor := "black@0.55"
+	if !c.BannerBox {
+		boxColor = "black@0.0"
+	}
+	fmt.Fprintf(&b, "color=c=%s:s=%dx%d:r=%d,format=rgba[bar0];", boxColor, g.barW, g.barH, c.FPS)
+	b.WriteString("[bar0][art]overlay=x=0:y=0[bar1];")
+
+	drawtext := "drawtext="
+	if c.FontFile != "" {
+		drawtext += "fontfile=" + escapeFilterPath(c.FontFile) + ":"
+	}
+	fontSize := g.fontSize
+	textY := itoa(g.textY)
+	if !audioInGraph {
+		// No visualization below the text — center it vertically in the bar
+		// and let it take more of the height.
+		fontSize = g.barH * 42 / 100
+		textY = "(h-text_h)/2"
+	}
+	shadow := ""
+	if !c.BannerBox {
+		// Without the box the text sits straight on the video — give it a
+		// drop shadow so it stays readable on bright backgrounds.
+		shadow = fmt.Sprintf(":shadowcolor=black@0.7:shadowx=%d:shadowy=%d", fontSize/16+1, fontSize/16+1)
+	}
+	fmt.Fprintf(&b, "[bar1]%stextfile=%s:reload=1:expansion=none:x=%d:y=%s:fontsize=%d:fontcolor=white%s[bar2];",
+		drawtext, escapeFilterPath(c.NowTxtPath), g.textX, textY, fontSize, shadow)
+
+	last := "bar2"
+	if audioInGraph {
+		// Tap the program audio for the visualization; [aout] replaces the
+		// direct -map 0:a + -af path (same aresample, so timing is unchanged).
+		b.WriteString("[0:a]aresample=async=1:first_pts=0,asplit=2[aout][avis];")
+		// Both styles render one column per pill, get blown up with
+		// nearest-neighbor into uniform chunky bars, then the pill mask
+		// ([4:v]) multiplies the alpha to cut the gaps and round the ends.
+		switch c.VizStyle {
+		case "wave":
+			// Centered amplitude envelope (audiogram look). Mono downmix on
+			// the viz branch only; cline's soft gradient is forced to solid
+			// white by thresholding the alpha.
+			// draw=full paints covered pixels at full intensity — without it,
+			// real-world (quieter) audio accumulates faint per-sample dots
+			// that crumble to speckles at the alpha threshold below.
+			// Full video rate: each frame spans 1/FPS of audio. A halved rate
+			// (wider time window) was tried and felt choppy/out-of-sync.
+			fmt.Fprintf(&b, "[avis]aformat=channel_layouts=mono,showwaves=s=%dx%d:mode=cline:rate=%d:scale=sqrt:draw=full[visraw];",
+				g.pillBars, g.vizH, c.FPS)
+			fmt.Fprintf(&b, "[visraw]scale=%d:%d:flags=neighbor,format=rgba,lutrgb=r=255:g=255:b=255:a='if(gt(val,60),255,0)'[visq];",
+				g.pillsW, g.vizH)
+		default: // "bars"
+			fmt.Fprintf(&b, "[avis]showfreqs=s=%dx%d:mode=bar:ascale=log:fscale=log:win_size=1024:averaging=4:cmode=combined:colors=white:rate=%d[visraw];",
+				g.pillBars, g.vizH, c.FPS)
+			fmt.Fprintf(&b, "[visraw]scale=%d:%d:flags=neighbor,format=rgba[visq];", g.pillsW, g.vizH)
+		}
+		fmt.Fprintf(&b, "[4:v]scale=%d:%d,format=rgba[pmask];", g.pillsW, g.vizH)
+		b.WriteString("[visq][pmask]blend=c3_mode=multiply[vis];")
+		fmt.Fprintf(&b, "[bar2][vis]overlay=x=%d:y=%d:format=auto[bar3];", g.pillsX, g.vizY)
+		last = "bar3"
+	}
+	// blend outputs the top layer's (banner's) color planes and multiplies the
+	// alpha planes, so the mask's uniform alpha scales the whole banner.
+	fmt.Fprintf(&b, "[%s]format=rgba[bnr0];[bnr0][fmask]blend=c3_mode=multiply[bnr];", last)
+	fmt.Fprintf(&b, "[bg][bnr]overlay=x=%d:y=%d:format=auto[bv];[bv]format=yuv420p[v]", g.barX, g.barY)
+	return b.String()
+}
+
 // escapeFilterPath makes a filesystem path safe inside an ffmpeg filtergraph
 // option value. ffmpeg requires the value single-quoted AND the Windows drive
 // colon backslash-escaped even when quoted (verified empirically). Forward
@@ -188,6 +440,30 @@ func escapeFilterPath(p string) string {
 	p = strings.ReplaceAll(p, "\\", "/")
 	p = strings.ReplaceAll(p, ":", "\\:")
 	return "'" + p + "'"
+}
+
+// findBoldFont returns a bold TTF for the banner title, falling back to the
+// regular weights (and finally "" → fontconfig default).
+func findBoldFont() string {
+	var candidates []string
+	switch runtime.GOOS {
+	case "windows":
+		candidates = []string{`C:\Windows\Fonts\arialbd.ttf`, `C:\Windows\Fonts\seguisb.ttf`}
+	default:
+		candidates = []string{
+			"/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+			"/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+			"/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+			"/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+			"/usr/share/fonts/noto/NotoSans-Bold.ttf",
+		}
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return c
+		}
+	}
+	return findFont()
 }
 
 // findFont returns a usable TTF for drawtext across platforms, or "" to let
@@ -215,9 +491,9 @@ func findFont() string {
 
 func itoa(n int) string { return fmt.Sprintf("%d", n) }
 
-// doubleRate returns twice an ffmpeg bitrate ("2500k" → "5000k") for -bufsize.
+// scaleRate multiplies an ffmpeg bitrate ("500k" × 4 → "2000k") for -bufsize.
 // Unparseable rates fall back unchanged, which ffmpeg treats as a 1x buffer.
-func doubleRate(rate string) string {
+func scaleRate(rate string, factor float64) string {
 	num, suffix := rate, ""
 	if len(num) > 0 {
 		switch num[len(num)-1] {
@@ -230,5 +506,5 @@ func doubleRate(rate string) string {
 	if err != nil {
 		return rate
 	}
-	return strconv.FormatFloat(v*2, 'f', -1, 64) + suffix
+	return strconv.FormatFloat(v*factor, 'f', -1, 64) + suffix
 }
