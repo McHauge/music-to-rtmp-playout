@@ -1,8 +1,10 @@
 package playout
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -39,6 +41,7 @@ type encoderConfig struct {
 	FPS          int
 	VideoEnabled bool   // false = audio-only stream, no video track
 	VideoBitrate string // CBR rate; empty = auto (CRF)
+	VideoCodec   string // resolved ffmpeg video encoder: "libx264" | "h264_nvenc"
 	AudioBitrate string
 	NowOverlay   bool   // draw the "now playing" lower-third banner
 	VizStyle     string // banner visualization: "bars" | "wave" | "none"
@@ -145,48 +148,75 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 		} else {
 			args = append(args, "-map", "0:a")
 		}
-		// No -tune stillimage: with the banner's animated visualization the
-		// frame has a permanently moving region, and stillimage's psy tuning
-		// makes x264 take many seconds to re-sharpen it after the banner
-		// fades in under a tight CBR budget. preset medium is still cheap at
-		// these low frame rates and buys sharper pills per bit — except in
-		// low-latency mode, where the medium preset's ~40-frame rc-lookahead is
-		// ~4s of delay at these low frame rates, so we drop to veryfast and
-		// disable every look-ahead/reorder stage below.
-		preset := "medium"
+		// Off low-latency the 4x-rate VBV buffer gives rate control burst
+		// headroom to re-sharpen the banner after it fades in; low-latency
+		// shrinks it to 1x (~1s) to cut HRD buffering delay. Applies to both
+		// encoders; the line rate itself stays constant.
+		bufFactor := 4.0
 		if c.LowLatency {
-			preset = "veryfast"
+			bufFactor = 1.0
 		}
-		args = append(args,
-			"-c:v", "libx264", "-preset", preset,
-			"-pix_fmt", "yuv420p", "-r", itoa(c.FPS), "-g", itoa(gop),
-			"-fps_mode", "cfr",
-		)
-		// x264-params assembled once so low-latency keys apply in both the CBR
-		// and CRF (empty bitrate) paths.
-		var x264Params []string
-		if c.VideoBitrate != "" {
-			// CBR on the wire (min=max=target + HRD filler). Off low-latency the
-			// 4x-rate VBV buffer gives rate control burst headroom to re-sharpen
-			// the banner after it fades in; low-latency shrinks it to 1x (~1s) to
-			// cut HRD buffering delay. The line rate itself stays constant.
-			bufFactor := 4.0
+		if c.VideoCodec == "h264_nvenc" {
+			// GPU path: NVENC uploads the yuv420p system-memory frames itself,
+			// so the CPU filtergraph above is unchanged. Off low-latency -preset
+			// p5 leans toward quality (radio is low-fps); low-latency drops to
+			// p4 with the ull ("ultra low latency") tune and disables B-frame
+			// reorder / rate-control look-ahead / encoder output delay.
+			preset := "p5"
 			if c.LowLatency {
-				bufFactor = 1.0
+				preset = "p4"
 			}
-			args = append(args, "-b:v", c.VideoBitrate, "-minrate", c.VideoBitrate, "-maxrate", c.VideoBitrate,
-				"-bufsize", scaleRate(c.VideoBitrate, bufFactor))
-			x264Params = append(x264Params, "nal-hrd=cbr")
-		}
-		if c.LowLatency {
-			// The x264 equivalent of NVENC "Ultra Low Latency": no B-frame
-			// reorder, no rate-control/sync look-ahead, slice-threaded (frame
-			// threading adds threads-worth of frames of delay), no scenecut.
-			x264Params = append(x264Params,
-				"bframes=0", "rc-lookahead=0", "sync-lookahead=0", "sliced-threads=1", "scenecut=0")
-		}
-		if len(x264Params) > 0 {
-			args = append(args, "-x264-params", strings.Join(x264Params, ":"))
+			args = append(args,
+				"-c:v", "h264_nvenc", "-preset", preset,
+				"-pix_fmt", "yuv420p", "-r", itoa(c.FPS), "-g", itoa(gop),
+				"-fps_mode", "cfr",
+			)
+			if c.LowLatency {
+				args = append(args, "-tune", "ull", "-rc-lookahead", "0", "-bf", "0", "-delay", "0")
+			}
+			if c.VideoBitrate != "" {
+				// NVENC-native CBR (the libx264 -x264-params nal-hrd=cbr flag is
+				// rejected here). The VBV buffer matches the libx264 path above.
+				args = append(args, "-rc", "cbr", "-b:v", c.VideoBitrate, "-maxrate", c.VideoBitrate,
+					"-bufsize", scaleRate(c.VideoBitrate, bufFactor))
+			}
+		} else {
+			// No -tune stillimage: with the banner's animated visualization the
+			// frame has a permanently moving region, and stillimage's psy tuning
+			// makes x264 take many seconds to re-sharpen it after the banner
+			// fades in under a tight CBR budget. preset medium is still cheap at
+			// these low frame rates and buys sharper pills per bit — except in
+			// low-latency mode, where the medium preset's ~40-frame rc-lookahead is
+			// ~4s of delay at these low frame rates, so we drop to veryfast and
+			// disable every look-ahead/reorder stage below.
+			preset := "medium"
+			if c.LowLatency {
+				preset = "veryfast"
+			}
+			args = append(args,
+				"-c:v", "libx264", "-preset", preset,
+				"-pix_fmt", "yuv420p", "-r", itoa(c.FPS), "-g", itoa(gop),
+				"-fps_mode", "cfr",
+			)
+			// x264-params assembled once so low-latency keys apply in both the CBR
+			// and CRF (empty bitrate) paths.
+			var x264Params []string
+			if c.VideoBitrate != "" {
+				// CBR on the wire (min=max=target + HRD filler).
+				args = append(args, "-b:v", c.VideoBitrate, "-minrate", c.VideoBitrate, "-maxrate", c.VideoBitrate,
+					"-bufsize", scaleRate(c.VideoBitrate, bufFactor))
+				x264Params = append(x264Params, "nal-hrd=cbr")
+			}
+			if c.LowLatency {
+				// The x264 equivalent of NVENC "Ultra Low Latency": no B-frame
+				// reorder, no rate-control/sync look-ahead, slice-threaded (frame
+				// threading adds threads-worth of frames of delay), no scenecut.
+				x264Params = append(x264Params,
+					"bframes=0", "rc-lookahead=0", "sync-lookahead=0", "sliced-threads=1", "scenecut=0")
+			}
+			if len(x264Params) > 0 {
+				args = append(args, "-x264-params", strings.Join(x264Params, ":"))
+			}
 		}
 	}
 
@@ -521,6 +551,44 @@ func findFont() string {
 }
 
 func itoa(n int) string { return fmt.Sprintf("%d", n) }
+
+// DetectNVENC reports whether NVIDIA hardware H.264 encoding is actually usable
+// with this ffmpeg build and host. Presence of h264_nvenc in `-encoders` only
+// proves it was compiled in, not that a GPU/driver is reachable (e.g. inside a
+// container), so this runs a tiny real encode and checks the exit code. Meant to
+// be called once at startup; the result is cached by the caller.
+func DetectNVENC(ffmpegPath string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, ffmpegPath,
+		"-hide_banner", "-loglevel", "error",
+		"-f", "lavfi", "-i", "color=black:s=64x64:r=5", "-t", "0.2",
+		"-c:v", "h264_nvenc", "-f", "null", "-",
+	)
+	return cmd.Run() == nil
+}
+
+// resolveVideoCodec maps a settings preference ("auto"|"cpu"|"nvenc") plus the
+// detected NVENC availability to the concrete ffmpeg encoder name. "nvenc"
+// (forced) still falls back to libx264 when unavailable so a misconfigured host
+// can't take the stream down.
+func resolveVideoCodec(pref string, nvencAvailable bool) string {
+	switch pref {
+	case "cpu":
+		return "libx264"
+	case "nvenc":
+		if nvencAvailable {
+			return "h264_nvenc"
+		}
+		log.Printf("video encoder: 'nvenc' selected but NVENC not available — falling back to libx264")
+		return "libx264"
+	default: // "auto" and any unknown value
+		if nvencAvailable {
+			return "h264_nvenc"
+		}
+		return "libx264"
+	}
+}
 
 // scaleRate multiplies an ffmpeg bitrate ("500k" × 4 → "2000k") for -bufsize.
 // Unparseable rates fall back unchanged, which ffmpeg treats as a 1x buffer.

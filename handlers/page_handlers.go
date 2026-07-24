@@ -173,6 +173,7 @@ func (app *App) SaveSettings(w http.ResponseWriter, r *http.Request) {
 		VideoHeight:  vh,
 		VideoEnabled: r.FormValue("video_enabled") != "",
 		VideoBitrate: strings.TrimSpace(r.FormValue("video_bitrate")),
+		VideoEncoder: r.FormValue("video_encoder"),
 		AudioBitrate: r.FormValue("audio_bitrate"),
 		NowOverlay:   r.FormValue("now_overlay") != "",
 		VizStyle:     r.FormValue("viz_style"),
@@ -187,6 +188,11 @@ func (app *App) SaveSettings(w http.ResponseWriter, r *http.Request) {
 	case "bars", "wave", "none":
 	default:
 		st.VizStyle = "bars"
+	}
+	switch st.VideoEncoder {
+	case "auto", "cpu", "nvenc":
+	default:
+		st.VideoEncoder = "auto"
 	}
 	if err := app.Settings.Save(st); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

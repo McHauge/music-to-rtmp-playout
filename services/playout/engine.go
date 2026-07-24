@@ -40,10 +40,11 @@ type Status struct {
 
 // EngineConfig holds static dependencies for the engine.
 type EngineConfig struct {
-	FFmpegPath  string
-	NowTxtPath  string
-	ArtLivePath string
-	FontFile    string
+	FFmpegPath     string
+	NowTxtPath     string
+	ArtLivePath    string
+	FontFile       string
+	NVENCAvailable bool // GPU (h264_nvenc) usable — probed once at startup
 }
 
 // Engine owns the single live show. All playback state lives in the run
@@ -126,6 +127,7 @@ func (e *Engine) Start(items []services.FlowItem, set services.Settings, playlis
 		FPS:          set.VideoFPS,
 		VideoEnabled: set.VideoEnabled,
 		VideoBitrate: set.VideoBitrate,
+		VideoCodec:   resolveVideoCodec(set.VideoEncoder, e.cfg.NVENCAvailable),
 		AudioBitrate: set.AudioBitrate,
 		NowOverlay:   set.NowOverlay,
 		VizStyle:     set.VizStyle,

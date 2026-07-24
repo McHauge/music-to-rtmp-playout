@@ -91,10 +91,18 @@ func main() {
 		}
 	}
 
+	nvencAvailable := playout.DetectNVENC(cfg.FFmpegPath)
+	if nvencAvailable {
+		log.Printf("video encoder: NVENC (h264_nvenc) available — 'auto' will use the GPU")
+	} else {
+		log.Printf("video encoder: NVENC not available — using software libx264")
+	}
+
 	engine := playout.NewEngine(playout.EngineConfig{
-		FFmpegPath:  cfg.FFmpegPath,
-		NowTxtPath:  filepath.Join(cfg.AssetsDir, "now.txt"),
-		ArtLivePath: filepath.Join(cfg.AssetsDir, "art_live.png"),
+		FFmpegPath:     cfg.FFmpegPath,
+		NowTxtPath:     filepath.Join(cfg.AssetsDir, "now.txt"),
+		ArtLivePath:    filepath.Join(cfg.AssetsDir, "art_live.png"),
+		NVENCAvailable: nvencAvailable,
 	})
 
 	tmpl, err := handlers.LoadTemplates("./templates")
