@@ -81,3 +81,14 @@ func (d *decoder) Stop() {
 	<-d.done
 	_ = d.cmd.Wait() // reap zombie
 }
+
+// reapAsync stops a decoder on a background goroutine so its blocking
+// close(abort)+Kill()+Wait() never stalls the run goroutine at a song boundary.
+// The goroutine owns d exclusively — the caller must have already dropped its
+// reference (nil'd the field) — and exits once Stop returns, so it cannot leak.
+func reapAsync(d *decoder) {
+	if d == nil {
+		return
+	}
+	go d.Stop()
+}

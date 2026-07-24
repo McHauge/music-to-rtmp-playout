@@ -323,8 +323,10 @@ func (e *encoder) SetBannerFade(level int) bool {
 }
 
 // swapFile atomically replaces path with data (temp file + rename), reporting
-// success. The rename can transiently collide with ffmpeg's periodic re-read
-// of the file on Windows, hence the short retry.
+// success. The rename can transiently collide with ffmpeg's periodic re-read of
+// the file on Windows, hence the short immediate retry. No sleep: this runs on
+// the run goroutine (via SetNowArt/SetBannerFade in publish), and a failed swap
+// is harmless — the caller retries on the next 5ms tick.
 func swapFile(path string, data []byte) bool {
 	if data == nil {
 		return false
@@ -337,7 +339,6 @@ func swapFile(path string, data []byte) bool {
 		if err := os.Rename(tmp, path); err == nil {
 			return true
 		}
-		time.Sleep(20 * time.Millisecond)
 	}
 	return false
 }

@@ -12,6 +12,19 @@ var (
 	errNotRunning     = errors.New("no show is streaming")
 )
 
+// prewarmResult carries a decoder spawned off the run goroutine back to run.
+type prewarmResult struct {
+	idx int      // the item index this decoder was spawned for
+	dec *decoder // nil if err != nil
+	err error
+}
+
+// prewarmLeadBytes is how much audio (or break silence) must remain before we
+// spawn the next song's decoder off-thread. 1.5s covers ffmpeg spawn plus the
+// 0.5s ring prime with margin, so the decoder is adopted already-primed at the
+// boundary. Tunable; raise if spawns are slow on the target box.
+const prewarmLeadBytes = int64(bytesPerSec) * 3 / 2 // 1.5s
+
 // player tracks position within the flow. It is owned exclusively by the
 // engine's run goroutine, so it needs no locking.
 type player struct {
@@ -28,6 +41,13 @@ type player struct {
 	paused     bool         // frozen mid-item; decoder kept alive via ring back-pressure
 	pauseAfter bool         // one-shot: pause when the current item completes
 	finished   bool
+
+	// Pre-warm of the next decoder, spawned off the run goroutine so the blocking
+	// exec.Start never stalls the pacing loop at a song boundary. A song change
+	// then becomes an in-memory swap onto an already-primed ring buffer.
+	prewarmIdx int                // item index a prewarm targets (in flight OR ready); -1 = none
+	prewarmDec *decoder           // ready prewarmed decoder adopted from prewarmCh; nil until ready
+	prewarmCh  chan prewarmResult // buffered(1); the helper goroutine hands the decoder back to run
 }
 
 // markPlayed records that item i has been played (visited and departed), so the
@@ -69,6 +89,19 @@ func (p *player) loadItem() {
 			p.advance()
 			return
 		}
+		// Adopt a ring-primed decoder the helper prepared for exactly this item.
+		// The primed 0.5s ring makes the first post-boundary Read a full chunk,
+		// so there is no silence gap and no pacer catch-up burst.
+		if p.prewarmDec != nil && p.prewarmIdx == p.idx {
+			p.dec = p.prewarmDec
+			p.prewarmDec = nil
+			p.prewarmIdx = -1
+			return
+		}
+		// No matching prewarm (manual jump to an unpredicted item, a too-fast
+		// transition, or a failed spawn): drop any stale prewarm and spawn
+		// synchronously. Rare, so the occasional inline stall is acceptable.
+		p.discardPrewarm()
 		d, err := startDecoder(p.ffmpegPath, it.Track.FilePath, ringSize)
 		if err != nil {
 			log.Printf("playout: decoder start failed for %q: %v", it.Track.FilePath, err)
@@ -83,6 +116,121 @@ func (p *player) loadItem() {
 		}
 	case services.ItemGate:
 		p.holding = true
+	}
+}
+
+// nextIdx is the index advance() will select next: the operator-queued item if
+// set, else idx+1. Mirrors the selection in advance().
+func (p *player) nextIdx() int {
+	if p.queued >= 0 {
+		return p.queued
+	}
+	return p.idx + 1
+}
+
+// shouldPrewarmNow reports whether the current item is close enough to its end
+// (and will auto-advance to a song) to justify spawning the next decoder now.
+func (p *player) shouldPrewarmNow() bool {
+	if p.finished || p.holding || p.paused {
+		return false
+	}
+	ni := p.nextIdx()
+	if ni < 0 || ni >= len(p.items) {
+		return false
+	}
+	nit := p.items[ni]
+	if nit.Type != services.ItemSong || nit.Track == nil || nit.Track.FilePath == "" {
+		return false // next is a break/gate/empty song — nothing to prewarm
+	}
+	it := p.items[p.idx]
+	switch it.Type {
+	case services.ItemSong:
+		if p.dec == nil || it.Track == nil || it.Track.DurationSec <= 0 {
+			return false // unknown length → can't time it; sync-spawn fallback
+		}
+		if !(it.AutoNext || p.pauseAfter) {
+			return false // will hold at end, not auto-advance
+		}
+		remaining := int64(it.Track.DurationSec*float64(bytesPerSec)) - p.itemBytes
+		return remaining <= prewarmLeadBytes
+	case services.ItemBreak:
+		if !it.AutoNext {
+			return false
+		}
+		return int64(p.breakRem) <= prewarmLeadBytes // covers break→song
+	}
+	return false
+}
+
+// servicePrewarm runs once per tick on the run goroutine. It adopts a decoder
+// the helper goroutine has finished spawning, then — when the current item is
+// within prewarmLeadBytes of its end and the next item is a song — launches the
+// next decoder off-thread so exec.Start never runs on the run goroutine.
+func (p *player) servicePrewarm() {
+	// (1) Adopt / discard whatever the helper handed back.
+	select {
+	case res := <-p.prewarmCh:
+		if res.err == nil && res.dec != nil && res.idx == p.prewarmIdx {
+			p.prewarmDec = res.dec // ready, still targets the current next item
+		} else {
+			if res.dec != nil {
+				reapAsync(res.dec) // stale target, or a spawn we no longer want
+			}
+			if res.idx == p.prewarmIdx {
+				p.prewarmIdx = -1 // spawn failed for the live target → sync fallback later
+			}
+		}
+	default:
+	}
+
+	// (2) Maybe launch a new prewarm. prewarmIdx>=0 means one is in flight or ready.
+	if p.prewarmIdx >= 0 || !p.shouldPrewarmNow() {
+		return
+	}
+	ni := p.nextIdx()
+	it := p.items[ni]
+	p.prewarmIdx = ni // set before launching → at most one in-flight spawn
+	ch := p.prewarmCh
+	ffmpeg, path := p.ffmpegPath, it.Track.FilePath // copy — the helper must not touch player
+	go func() {
+		d, err := startDecoder(ffmpeg, path, ringSize)
+		ch <- prewarmResult{idx: ni, dec: d, err: err}
+	}()
+}
+
+// discardPrewarm drops a prewarm that no longer targets the right item. A ready
+// decoder is reaped off-thread; an in-flight one is left to deliver into
+// prewarmCh, where servicePrewarm reaps it because res.idx won't match the reset
+// prewarmIdx (or the shutdown drain reaps it).
+func (p *player) discardPrewarm() {
+	if p.prewarmDec != nil {
+		reapAsync(p.prewarmDec)
+		p.prewarmDec = nil
+	}
+	p.prewarmIdx = -1
+}
+
+// shutdown reaps every decoder the player owns when run exits. Called via defer
+// on every run return path. run is the sole owner and has stopped touching these
+// fields by the time this runs.
+func (p *player) shutdown() {
+	if p.dec != nil {
+		reapAsync(p.dec)
+		p.dec = nil
+	}
+	if p.prewarmDec != nil {
+		reapAsync(p.prewarmDec)
+		p.prewarmDec = nil
+	}
+	if p.prewarmIdx >= 0 { // a helper spawn may still be in flight
+		ch := p.prewarmCh
+		go func() {
+			res := <-ch // the helper always delivers exactly once
+			if res.dec != nil {
+				res.dec.Stop()
+			}
+		}()
+		p.prewarmIdx = -1
 	}
 }
 
@@ -124,7 +272,7 @@ func (p *player) fill(out []byte) {
 // auto-advances or parks in the holding state for manual release.
 func (p *player) endOfItem(it services.FlowItem) {
 	if p.dec != nil {
-		p.dec.Stop()
+		reapAsync(p.dec)
 		p.dec = nil
 	}
 	if p.pauseAfter {
@@ -143,7 +291,7 @@ func (p *player) endOfItem(it services.FlowItem) {
 // advance moves to the next item (the operator-queued one, if any) and loads it.
 func (p *player) advance() {
 	if p.dec != nil {
-		p.dec.Stop()
+		reapAsync(p.dec)
 		p.dec = nil
 	}
 	p.markPlayed(p.idx) // leaving the current item
@@ -169,6 +317,7 @@ func (p *player) queueNext(i int) {
 	} else {
 		p.queued = i
 	}
+	p.discardPrewarm() // the next target changed; servicePrewarm re-aims next tick
 }
 
 // skip abandons the current item immediately (works while playing or holding).
@@ -203,7 +352,7 @@ func (p *player) jumpTo(i int) {
 		p.markPlayed(p.idx) // leaving the current item for a different one
 	}
 	if p.dec != nil {
-		p.dec.Stop()
+		reapAsync(p.dec)
 		p.dec = nil
 	}
 	p.breakRem = 0

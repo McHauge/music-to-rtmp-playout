@@ -242,8 +242,14 @@ func (e *Engine) run(enc *encoder, items []services.FlowItem, vmix *voiceMixer, 
 		e.mu.Unlock()
 	}()
 
-	p := &player{items: items, ffmpegPath: e.cfg.FFmpegPath, idx: startAt, queued: -1}
+	p := &player{
+		items: items, ffmpegPath: e.cfg.FFmpegPath, idx: startAt, queued: -1,
+		prewarmIdx: -1, prewarmCh: make(chan prewarmResult, 1),
+	}
 	p.loadItem()
+	// Reap every decoder the player owns on any run return path (LIFO: before the
+	// encoder Stop defer). Declared here because the top-level defer can't see p.
+	defer p.shutdown()
 	// Begin cued-and-paused at 0:00 so nothing airs until the operator hits Play.
 	if !p.finished {
 		p.paused = true
@@ -362,6 +368,10 @@ func (e *Engine) run(enc *encoder, items []services.FlowItem, vmix *voiceMixer, 
 				drained = true
 			}
 		}
+
+		// Adopt any ready prewarmed decoder (before fill can consume it) and, when
+		// the current item nears its end, spawn the next song's decoder off-thread.
+		p.servicePrewarm()
 
 		// Pace: write chunks until we've produced up to (elapsed + lead).
 		target := int64(time.Since(start).Seconds()*sampleRate) + lead
