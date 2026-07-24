@@ -289,20 +289,24 @@ func (e *Engine) run(enc *encoder, items []services.FlowItem, vmix *voiceMixer, 
 		}
 		e.setStatus(s)
 
-		// Banner: fade toward shown/hidden, and sync the text/art content only
-		// while shown or fully hidden — never mid-fade-out, so the outgoing
-		// song's banner keeps its content while it disappears.
-		visible := p.bannerVisible()
-		if visible || fadeAlpha == 0 {
-			text := p.overlayText()
-			if text != lastText {
-				enc.SetNowPlaying(text)
-				lastText = text
+		// Banner: the displayed content (lastText/lastArt) only ever changes
+		// while the banner is fully hidden. When the wanted content differs
+		// from what is displayed (instant decoder adoption means the song can
+		// change while the banner is still up), the banner is treated as
+		// hidden: it fades out still showing the old song, swaps at alpha 0,
+		// then fades back in with the new one.
+		wantText, wantArt := p.overlayText(), p.overlayArt()
+		visible := p.bannerVisible() && wantText == lastText && wantArt == lastArt
+		if fadeAlpha == 0 {
+			if wantText != lastText {
+				enc.SetNowPlaying(wantText)
+				lastText = wantText
 			}
-			art := p.overlayArt()
-			if art != lastArt && enc.SetNowArt(art) {
-				lastArt = art // on swap failure, retry next tick
+			if wantArt != lastArt {
+				enc.SetNowArt(wantArt)
+				lastArt = wantArt
 			}
+			visible = p.bannerVisible() // swapped: fade back in immediately
 		}
 		now := time.Now()
 		step := now.Sub(lastFadeTick).Seconds() / fadeDur
@@ -312,8 +316,9 @@ func (e *Engine) run(enc *encoder, items []services.FlowItem, vmix *voiceMixer, 
 		} else {
 			fadeAlpha = max(0, fadeAlpha-step)
 		}
-		if q := int(fadeAlpha*fadeLevels + 0.5); q != fadeWritten && enc.SetBannerFade(q) {
-			fadeWritten = q // on swap failure, retry next tick
+		if q := int(fadeAlpha*fadeLevels + 0.5); q != fadeWritten {
+			enc.SetBannerFade(q)
+			fadeWritten = q
 		}
 	}
 	publish()

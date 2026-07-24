@@ -66,6 +66,30 @@ func uniformAlphaPNG(a uint8) []byte {
 	return buf.Bytes()
 }
 
+var (
+	fadeLevelOnce sync.Once
+	fadeLevelData [][]byte
+)
+
+// fadeLevelPNG returns the pre-encoded uniform-alpha PNG for a banner fade
+// level (0..fadeLevels, clamped). All levels are encoded once on first use so
+// the fade animation never encodes PNGs on the run goroutine's tick.
+func fadeLevelPNG(level int) []byte {
+	fadeLevelOnce.Do(func() {
+		fadeLevelData = make([][]byte, fadeLevels+1)
+		for l := 0; l <= fadeLevels; l++ {
+			fadeLevelData[l] = uniformAlphaPNG(uint8(l * 255 / fadeLevels))
+		}
+	})
+	if level < 0 {
+		level = 0
+	}
+	if level > fadeLevels {
+		level = fadeLevels
+	}
+	return fadeLevelData[level]
+}
+
 // placeholderPNG returns a generated artSize×artSize cover used when a track
 // has no art: the background navy with a vinyl-record motif.
 func placeholderPNG() []byte {

@@ -72,6 +72,11 @@ func (d *decoder) Read(p []byte) int { return d.ring.Read(p) }
 // Finished reports true once ffmpeg has produced everything and the ring is empty.
 func (d *decoder) Finished() bool { return d.ring.Drained() }
 
+// Ready reports whether at least min bytes of PCM are primed in the ring (or
+// the whole file has been decoded, for clips shorter than min). Used to gate
+// the swap onto a freshly spawned decoder so playback starts clean.
+func (d *decoder) Ready(min int) bool { return d.ring.Available() >= min || d.ring.Closed() }
+
 // Stop kills the ffmpeg process (used on skip/stop) and reaps it.
 func (d *decoder) Stop() {
 	close(d.abort)

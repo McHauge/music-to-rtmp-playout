@@ -23,10 +23,27 @@ type encoder struct {
 	cmd      *exec.Cmd
 	stdin    io.WriteCloser
 	nowTxt   string
-	artLive  string // live-swapped banner art; "" when the banner is off
-	fadeLive string // live-swapped banner fade mask (uniform-alpha png)
+	artLive  string // live banner cover art; "" when the banner is off
+	fadeLive string // live banner fade mask (uniform-alpha png)
 	bannerOn bool
 	done     chan struct{}
+}
+
+// overwriteInPlace replaces path's content without the file ever disappearing:
+// new bytes over the old, then truncate any leftover tail. ffmpeg re-opens
+// these files continuously (drawtext reload=1 every frame, image2 -loop 1 every
+// loop iteration), and on Windows a rename replace has a delete-pending window
+// in which that re-open fails — fatal to the filter/input and the stream. A
+// reader can see a torn write instead, which at worst glitches a single frame.
+func overwriteInPlace(path string, data []byte) {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0o644)
+	if err != nil {
+		return
+	}
+	if _, err := f.Write(data); err == nil {
+		_ = f.Truncate(int64(len(data)))
+	}
+	_ = f.Close()
 }
 
 // encoderConfig captures everything the encoder ffmpeg needs.
@@ -35,7 +52,7 @@ type encoderConfig struct {
 	RTMPURL      string
 	BgImagePath  string
 	NowTxtPath   string
-	ArtLivePath  string // square cover art swapped per song (banner)
+	ArtLivePath  string // anchor for generated banner assets (viz mask); the live art itself is served from memory
 	FontFile     string
 	Width        int
 	Height       int
@@ -84,19 +101,6 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 	if err := os.WriteFile(c.NowTxtPath, []byte(" "), 0o644); err != nil {
 		return nil, err
 	}
-	fadeLivePath := ""
-	if banner {
-		// The art and fade-mask input files must exist (at their canonical
-		// sizes) before ffmpeg starts; the first publish swaps in the real
-		// cover and fades the banner in once a song actually starts.
-		if err := os.WriteFile(c.ArtLivePath, placeholderPNG(), 0o644); err != nil {
-			return nil, err
-		}
-		fadeLivePath = filepath.Join(filepath.Dir(c.ArtLivePath), "banner_fade.png")
-		if err := os.WriteFile(fadeLivePath, uniformAlphaPNG(0), 0o644); err != nil {
-			return nil, err
-		}
-	}
 	vizMaskPath := ""
 	if audioInGraph {
 		// Static pill mask for the visualization, supersampled 4x and
@@ -104,6 +108,21 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 		vizMaskPath = filepath.Join(filepath.Dir(c.ArtLivePath), "viz_mask.png")
 		mask := pillMaskPNG(geom.pillsW*4, geom.vizH*4, (geom.pill+geom.pillGap)*4, geom.pill*4)
 		if err := os.WriteFile(vizMaskPath, mask, 0o644); err != nil {
+			return nil, err
+		}
+	}
+	fadeLivePath := ""
+	if banner {
+		// The art and fade-mask input files must exist (at their canonical
+		// sizes) before ffmpeg starts; the first publish swaps in the real
+		// cover and fades the banner in once a song actually starts. They are
+		// updated with overwriteInPlace, never renamed, so ffmpeg's per-frame
+		// re-opens can't hit a missing file.
+		if err := os.WriteFile(c.ArtLivePath, placeholderPNG(), 0o644); err != nil {
+			return nil, err
+		}
+		fadeLivePath = filepath.Join(filepath.Dir(c.ArtLivePath), "banner_fade.png")
+		if err := os.WriteFile(fadeLivePath, fadeLevelPNG(0), 0o644); err != nil {
 			return nil, err
 		}
 	}
@@ -126,10 +145,11 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 		}
 		if banner {
 			// Cover art (input 2) and fade mask (input 3). image2 with -loop 1
-			// re-reads the file on every loop iteration, so an atomic rename
-			// swaps the content mid-stream. -thread_queue_size 1 keeps the
-			// demuxer from reading ahead, so a swap shows within ~2 frames;
-			// re-decoding these tiny PNGs at the video rate is negligible.
+			// re-reads the file on every loop iteration, so an in-place
+			// overwrite (never a rename — see overwriteInPlace) updates the
+			// content mid-stream. -thread_queue_size 1 keeps the demuxer from
+			// reading ahead, so an update shows within ~2 frames; re-decoding
+			// these tiny PNGs at the video rate is negligible.
 			args = append(args,
 				"-thread_queue_size", "1", "-loop", "1", "-framerate", itoa(c.FPS), "-f", "image2", "-i", c.ArtLivePath,
 				"-thread_queue_size", "1", "-loop", "1", "-framerate", itoa(c.FPS), "-f", "image2", "-i", fadeLivePath,
@@ -263,35 +283,36 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 	return e, nil
 }
 
-// Write feeds a PCM chunk to the encoder. A write error (EPIPE) means ffmpeg died.
+// Write feeds a PCM chunk to the encoder. A write error (EPIPE) means ffmpeg
+// died. A blocked write means ffmpeg stopped consuming stdin (a stalled input
+// or output downstream) — that back-pressures the whole pacing loop, so any
+// stall long enough to be audible is logged as evidence.
 func (e *encoder) Write(p []byte) error {
+	start := time.Now()
 	_, err := e.stdin.Write(p)
+	if d := time.Since(start); d > 100*time.Millisecond {
+		log.Printf("playout: encoder stdin write stalled %dms — ffmpeg not consuming audio", d.Milliseconds())
+	}
 	return err
 }
 
-// SetNowPlaying atomically updates the overlay text (temp file + rename) so
-// drawtext never reads a half-written line. The banner renders uppercase
-// (drawtext has no text-transform, so it happens here).
+// SetNowPlaying updates the overlay text in place (see overwriteInPlace —
+// drawtext reload=1 re-reads the file every frame; worst case a single frame
+// renders a mix of old and new text). The banner renders uppercase (drawtext
+// has no text-transform, so it happens here).
 func (e *encoder) SetNowPlaying(text string) {
 	if text == "" {
 		text = " "
 	}
-	text = strings.ToUpper(text)
-	tmp := e.nowTxt + ".tmp"
-	if err := os.WriteFile(tmp, []byte(text), 0o644); err != nil {
-		return
-	}
-	_ = os.Rename(tmp, e.nowTxt)
+	overwriteInPlace(e.nowTxt, []byte(strings.ToUpper(text)))
 }
 
-// SetNowArt atomically swaps the banner cover art (temp file + rename, like
-// SetNowPlaying). src must be a normalized artSize×artSize PNG — anything else
-// would break the running filter graph; "" (or an unreadable file) restores the
-// placeholder. Returns false if the swap could not be completed (caller may
-// retry).
-func (e *encoder) SetNowArt(src string) bool {
+// SetNowArt swaps the banner cover art. src must be a normalized
+// artSize×artSize PNG — anything else would break the running filter graph;
+// "" (or an unreadable file) restores the placeholder.
+func (e *encoder) SetNowArt(src string) {
 	if !e.bannerOn {
-		return true
+		return
 	}
 	data := placeholderPNG()
 	if src != "" {
@@ -299,48 +320,20 @@ func (e *encoder) SetNowArt(src string) bool {
 			data = b
 		}
 	}
-	return swapFile(e.artLive, data)
+	overwriteInPlace(e.artLive, data)
 }
 
 // fadeLevels quantizes banner fade alpha; level 0 = hidden, fadeLevels = shown.
 const fadeLevels = 15
 
-// SetBannerFade atomically swaps the fade mask to level (0..fadeLevels). The
-// engine steps the level over time to animate the banner in and out. Returns
-// false if the swap could not be completed — the caller must retry, or the
-// banner would stick at a stale fade level.
-func (e *encoder) SetBannerFade(level int) bool {
+// SetBannerFade sets the fade mask to level (0..fadeLevels). The engine steps
+// the level over time to animate the banner in and out. The level PNGs are
+// pre-encoded (fadeLevelPNG), so this is a lookup plus a ~100-byte file write.
+func (e *encoder) SetBannerFade(level int) {
 	if !e.bannerOn {
-		return true
+		return
 	}
-	if level < 0 {
-		level = 0
-	}
-	if level > fadeLevels {
-		level = fadeLevels
-	}
-	return swapFile(e.fadeLive, uniformAlphaPNG(uint8(level*255/fadeLevels)))
-}
-
-// swapFile atomically replaces path with data (temp file + rename), reporting
-// success. The rename can transiently collide with ffmpeg's periodic re-read of
-// the file on Windows, hence the short immediate retry. No sleep: this runs on
-// the run goroutine (via SetNowArt/SetBannerFade in publish), and a failed swap
-// is harmless — the caller retries on the next 5ms tick.
-func swapFile(path string, data []byte) bool {
-	if data == nil {
-		return false
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return false
-	}
-	for i := 0; i < 3; i++ {
-		if err := os.Rename(tmp, path); err == nil {
-			return true
-		}
-	}
-	return false
+	overwriteInPlace(e.fadeLive, fadeLevelPNG(level))
 }
 
 // Stop closes stdin (audio EOF → -shortest ends the stream and finalizes the

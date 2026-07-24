@@ -63,6 +63,13 @@ func (rb *RingBuffer) Free() int {
 	return rb.size - rb.count
 }
 
+// Closed reports whether the writer has finished, regardless of unread bytes.
+func (rb *RingBuffer) Closed() bool {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	return rb.closed
+}
+
 // Close marks the writer as finished. Drained reads after close report EOF via Drained.
 func (rb *RingBuffer) Close() {
 	rb.mu.Lock()

@@ -1,8 +1,10 @@
 package playout
 
 import (
+	"encoding/binary"
 	"errors"
 	"log"
+	"time"
 
 	"music-to-rtmp-playout/services"
 )
@@ -19,11 +21,14 @@ type prewarmResult struct {
 	err error
 }
 
-// prewarmLeadBytes is how much audio (or break silence) must remain before we
-// spawn the next song's decoder off-thread. 1.5s covers ffmpeg spawn plus the
-// 0.5s ring prime with margin, so the decoder is adopted already-primed at the
-// boundary. Tunable; raise if spawns are slow on the target box.
-const prewarmLeadBytes = int64(bytesPerSec) * 3 / 2 // 1.5s
+// Manual-cut transition: a skip/jump fades the outgoing song to silence while
+// the incoming song ramps in on top of it (a crossfade). All tunable; keep
+// them multiples of frameBytes.
+const (
+	fadeOutBytes  = int64(bytesPerSec) * 8 / 10 // 0.8s fade to silence on a manual cut
+	fadeInBytes   = int64(bytesPerSec) * 3 / 10 // 0.3s fade-in of the incoming song
+	minPrimeBytes = bytesPerSec / 4             // ring fill required before adopting a pending decoder
+)
 
 // player tracks position within the flow. It is owned exclusively by the
 // engine's run goroutine, so it needs no locking.
@@ -48,6 +53,47 @@ type player struct {
 	prewarmIdx int                // item index a prewarm targets (in flight OR ready); -1 = none
 	prewarmDec *decoder           // ready prewarmed decoder adopted from prewarmCh; nil until ready
 	prewarmCh  chan prewarmResult // buffered(1); the helper goroutine hands the decoder back to run
+
+	// Manual-cut transition state. The outgoing decoder renders a fade tail to
+	// silence that is summed on top of the incoming program (a crossfade); the
+	// incoming song ramps in as soon as its decoder is primed.
+	outDec       *decoder // outgoing decoder rendering its fade tail; nil when idle
+	outFadeRem   int64    // bytes of fade-out ramp remaining
+	outFadeTotal int64
+	inFadeRem    int64 // bytes of fade-in ramp remaining on p.dec
+	inFadeTotal  int64
+	armFadeIn    bool   // manual cut pending: ramp in when the next audio first plays
+	tailBuf      []byte // scratch chunk the fade tail renders into before mixing
+
+	spawnStart      time.Time // when the in-flight prewarm spawn launched (latency log)
+	lastUnderrunLog time.Time // throttles the ring-underrun diagnostic
+}
+
+// applyFade scales the s16le samples in buf by a linear ramp. rem is how many
+// ramp bytes remain (of total); rising selects fade-in (gain grows toward 1)
+// versus fade-out (gain falls toward 0, and samples past the ramp end are
+// muted). Returns the ramp bytes remaining after buf.
+func applyFade(buf []byte, rem, total int64, rising bool) int64 {
+	if total <= 0 {
+		return 0
+	}
+	for i := 0; i+1 < len(buf); i += 2 {
+		r := rem - int64(i)
+		if r < 0 {
+			r = 0
+		}
+		g := float64(r) / float64(total)
+		if rising {
+			g = 1 - g
+		}
+		s := int16(binary.LittleEndian.Uint16(buf[i:]))
+		binary.LittleEndian.PutUint16(buf[i:], uint16(int16(float64(s)*g)))
+	}
+	rem -= int64(len(buf))
+	if rem < 0 {
+		rem = 0
+	}
+	return rem
 }
 
 // markPlayed records that item i has been played (visited and departed), so the
@@ -90,25 +136,26 @@ func (p *player) loadItem() {
 			return
 		}
 		// Adopt a ring-primed decoder the helper prepared for exactly this item.
-		// The primed 0.5s ring makes the first post-boundary Read a full chunk,
-		// so there is no silence gap and no pacer catch-up burst.
-		if p.prewarmDec != nil && p.prewarmIdx == p.idx {
-			p.dec = p.prewarmDec
-			p.prewarmDec = nil
-			p.prewarmIdx = -1
+		// The prime gate matters: the helper delivers the decoder right after
+		// exec.Start, *before* the ring fills, and starting playback on a
+		// trickling ring makes the fade-in stutter (ramp, underrun, ramp again).
+		if p.prewarmIdx == p.idx {
+			if p.prewarmDec != nil && p.prewarmDec.Ready(minPrimeBytes) {
+				p.dec = p.prewarmDec
+				p.prewarmDec = nil
+				p.prewarmIdx = -1
+			}
+			// else: the spawn is in flight or still priming — leave it as a
+			// pending load; servicePrewarm adopts it once primed.
 			return
 		}
-		// No matching prewarm (manual jump to an unpredicted item, a too-fast
-		// transition, or a failed spawn): drop any stale prewarm and spawn
-		// synchronously. Rare, so the occasional inline stall is acceptable.
+		// No matching prewarm (manual jump to an unpredicted item, or a failed
+		// spawn): drop any stale prewarm and load asynchronously. The run
+		// goroutine must never block on exec.Start — p.dec stays nil (a pending
+		// load) and fill emits silence until servicePrewarm adopts the decoder.
 		p.discardPrewarm()
-		d, err := startDecoder(p.ffmpegPath, it.Track.FilePath, ringSize)
-		if err != nil {
-			log.Printf("playout: decoder start failed for %q: %v", it.Track.FilePath, err)
-			p.advance()
-			return
-		}
-		p.dec = d
+		p.prewarmIdx = p.idx
+		p.launchSpawn(p.idx)
 	case services.ItemBreak:
 		p.breakRem = it.BreakSec * bytesPerSec
 		if p.breakRem <= 0 {
@@ -128,10 +175,14 @@ func (p *player) nextIdx() int {
 	return p.idx + 1
 }
 
-// shouldPrewarmNow reports whether the current item is close enough to its end
-// (and will auto-advance to a song) to justify spawning the next decoder now.
+// shouldPrewarmNow reports whether a decoder for the next item should be kept
+// spawned and ring-primed. The next song is prewarmed for the *whole* time the
+// current item plays (a standing prewarm) — not just near a natural boundary —
+// so a manual skip also lands on an already-primed decoder instead of paying
+// the ffmpeg spawn+probe latency as dead air. Cost: one idle, back-pressured
+// ffmpeg per playing item.
 func (p *player) shouldPrewarmNow() bool {
-	if p.finished || p.holding || p.paused {
+	if p.finished || p.paused {
 		return false
 	}
 	ni := p.nextIdx()
@@ -139,63 +190,73 @@ func (p *player) shouldPrewarmNow() bool {
 		return false
 	}
 	nit := p.items[ni]
-	if nit.Type != services.ItemSong || nit.Track == nil || nit.Track.FilePath == "" {
-		return false // next is a break/gate/empty song — nothing to prewarm
-	}
-	it := p.items[p.idx]
-	switch it.Type {
-	case services.ItemSong:
-		if p.dec == nil || it.Track == nil || it.Track.DurationSec <= 0 {
-			return false // unknown length → can't time it; sync-spawn fallback
-		}
-		if !(it.AutoNext || p.pauseAfter) {
-			return false // will hold at end, not auto-advance
-		}
-		remaining := int64(it.Track.DurationSec*float64(bytesPerSec)) - p.itemBytes
-		return remaining <= prewarmLeadBytes
-	case services.ItemBreak:
-		if !it.AutoNext {
-			return false
-		}
-		return int64(p.breakRem) <= prewarmLeadBytes // covers break→song
-	}
-	return false
+	return nit.Type == services.ItemSong && nit.Track != nil && nit.Track.FilePath != ""
+}
+
+// launchSpawn starts the decoder for item idx on a helper goroutine, delivering
+// into prewarmCh. The caller must have set prewarmIdx = idx first, so at most
+// one spawn is ever in flight.
+func (p *player) launchSpawn(idx int) {
+	ch := p.prewarmCh
+	p.spawnStart = time.Now()
+	ffmpeg, path := p.ffmpegPath, p.items[idx].Track.FilePath // copy — the helper must not touch player
+	go func() {
+		d, err := startDecoder(ffmpeg, path, ringSize)
+		ch <- prewarmResult{idx: idx, dec: d, err: err}
+	}()
 }
 
 // servicePrewarm runs once per tick on the run goroutine. It adopts a decoder
-// the helper goroutine has finished spawning, then — when the current item is
-// within prewarmLeadBytes of its end and the next item is a song — launches the
-// next decoder off-thread so exec.Start never runs on the run goroutine.
+// the helper goroutine has finished spawning, resolves a pending load of the
+// current item, then — whenever the next item is a song with no prewarm yet —
+// launches its decoder off-thread (the standing prewarm), so exec.Start never
+// runs on the run goroutine.
 func (p *player) servicePrewarm() {
 	// (1) Adopt / discard whatever the helper handed back.
 	select {
 	case res := <-p.prewarmCh:
-		if res.err == nil && res.dec != nil && res.idx == p.prewarmIdx {
-			p.prewarmDec = res.dec // ready, still targets the current next item
+		if res.err == nil && res.dec != nil && res.idx == p.prewarmIdx && p.prewarmDec == nil {
+			p.prewarmDec = res.dec // ready, still targets the live prewarm target
 		} else {
 			if res.dec != nil {
 				reapAsync(res.dec) // stale target, or a spawn we no longer want
 			}
-			if res.idx == p.prewarmIdx {
-				p.prewarmIdx = -1 // spawn failed for the live target → sync fallback later
+			if res.err != nil && res.idx == p.prewarmIdx {
+				p.prewarmIdx = -1 // spawn failed for the live target
+				if res.idx == p.idx && p.dec == nil && !p.finished {
+					// The pending load for the *current* item failed — skip it,
+					// matching the old synchronous-failure behavior.
+					log.Printf("playout: decoder start failed for item %d: %v", res.idx, res.err)
+					p.advance()
+				}
 			}
 		}
 	default:
 	}
 
-	// (2) Maybe launch a new prewarm. prewarmIdx>=0 means one is in flight or ready.
+	// (2) Pending load of the current song: adopt the delivered decoder as soon
+	// as its ring is primed — the "worker says I'm ready" gate that makes the
+	// swap clean. Any outgoing fade tail keeps rendering on top (crossfade).
+	if p.dec == nil && !p.finished && p.idx < len(p.items) &&
+		p.items[p.idx].Type == services.ItemSong &&
+		p.prewarmDec != nil && p.prewarmIdx == p.idx &&
+		p.prewarmDec.Ready(minPrimeBytes) {
+		// This path is the cold spawn (no standing prewarm predicted this item);
+		// log how long the spawn actually took so the fade tunables have data.
+		log.Printf("playout: cold decoder for item %d ready %.0fms after spawn", p.idx,
+			time.Since(p.spawnStart).Seconds()*1000)
+		p.dec = p.prewarmDec
+		p.prewarmDec = nil
+		p.prewarmIdx = -1
+	}
+
+	// (3) Maybe launch a new prewarm. prewarmIdx>=0 means one is in flight or ready.
 	if p.prewarmIdx >= 0 || !p.shouldPrewarmNow() {
 		return
 	}
 	ni := p.nextIdx()
-	it := p.items[ni]
 	p.prewarmIdx = ni // set before launching → at most one in-flight spawn
-	ch := p.prewarmCh
-	ffmpeg, path := p.ffmpegPath, it.Track.FilePath // copy — the helper must not touch player
-	go func() {
-		d, err := startDecoder(ffmpeg, path, ringSize)
-		ch <- prewarmResult{idx: ni, dec: d, err: err}
-	}()
+	p.launchSpawn(ni)
 }
 
 // discardPrewarm drops a prewarm that no longer targets the right item. A ready
@@ -218,6 +279,10 @@ func (p *player) shutdown() {
 		reapAsync(p.dec)
 		p.dec = nil
 	}
+	if p.outDec != nil {
+		reapAsync(p.outDec)
+		p.outDec = nil
+	}
 	if p.prewarmDec != nil {
 		reapAsync(p.prewarmDec)
 		p.prewarmDec = nil
@@ -234,20 +299,65 @@ func (p *player) shutdown() {
 	}
 }
 
+// beginTransition converts a manual cut (skip/jump) of audible audio into a
+// crossfade: the current decoder becomes the outgoing fade tail instead of
+// being reaped hard, and the incoming song is armed to ramp in — on top of the
+// tail — as soon as it starts. When nothing is audible (pending load, cued,
+// paused, break) there is nothing to fade — the caller's normal reap handles
+// the decoder, and only the fade-in stays armed.
+func (p *player) beginTransition() {
+	if p.dec != nil && p.itemBytes > 0 && !p.paused {
+		if p.outDec != nil {
+			reapAsync(p.outDec) // double-cut mid-fade: drop the older tail
+		}
+		p.outDec = p.dec
+		p.dec = nil
+		p.outFadeTotal = fadeOutBytes
+		p.outFadeRem = fadeOutBytes
+	}
+	p.armFadeIn = true
+	p.inFadeRem = 0
+}
+
 // fill writes one chunk of program audio into out (already zeroed = silence).
-// It advances the flow as items complete, honoring auto-next vs. hold.
+// It advances the flow as items complete, honoring auto-next vs. hold. A
+// manual-cut fade tail is summed on top of the incoming program, so a skip
+// crossfades instead of leaving dead air.
 func (p *player) fill(out []byte) {
-	if p.finished || p.holding || p.paused {
+	if p.paused {
+		return // silence; program and fade tail freeze (ring back-pressure keeps them alive)
+	}
+	p.programInto(out)
+	p.mixTailInto(out)
+}
+
+// programInto renders the current item's audio into out (already zeroed).
+func (p *player) programInto(out []byte) {
+	if p.finished || p.holding {
 		return // silence
 	}
 	it := p.items[p.idx]
 	switch it.Type {
 	case services.ItemSong:
 		if p.dec == nil {
-			p.endOfItem(it)
+			// Pending load: silence until servicePrewarm adopts the primed
+			// decoder (spawn failures advance() there, so this always resolves).
 			return
 		}
 		n := p.dec.Read(out) // short reads leave the remainder as silence (underrun pad)
+		if n < len(out) && !p.dec.Finished() && time.Since(p.lastUnderrunLog) > time.Second {
+			p.lastUnderrunLog = time.Now()
+			log.Printf("playout: song ring underrun (read %d/%d bytes) at item %d, %.1fs in",
+				n, len(out), p.idx, p.itemElapsedSec())
+		}
+		if n > 0 && p.armFadeIn {
+			p.armFadeIn = false
+			p.inFadeTotal = fadeInBytes
+			p.inFadeRem = fadeInBytes
+		}
+		if p.inFadeRem > 0 {
+			p.inFadeRem = applyFade(out[:n], p.inFadeRem, p.inFadeTotal, true)
+		}
 		p.itemBytes += int64(n)
 		if p.dec.Finished() {
 			p.endOfItem(it)
@@ -265,6 +375,32 @@ func (p *player) fill(out []byte) {
 		// out stays silent
 	case services.ItemGate:
 		p.holding = true
+	}
+}
+
+// mixTailInto renders the outgoing fade tail from a manual cut and sums it on
+// top of out (which already holds the incoming program), hard-clipping like the
+// soundboard mixer. Rendered even while holding or finished, so a skip into a
+// gate (or off the end) still lands on the ramp instead of a hard cut.
+func (p *player) mixTailInto(out []byte) {
+	if p.outDec == nil {
+		return
+	}
+	if len(p.tailBuf) < len(out) {
+		p.tailBuf = make([]byte, len(out))
+	}
+	tail := p.tailBuf[:len(out)]
+	n := p.outDec.Read(tail)
+	p.outFadeRem = applyFade(tail[:n], p.outFadeRem, p.outFadeTotal, false)
+	for i := 0; i+1 < n; i += 2 {
+		sum := int32(int16(binary.LittleEndian.Uint16(out[i:]))) +
+			int32(int16(binary.LittleEndian.Uint16(tail[i:])))
+		binary.LittleEndian.PutUint16(out[i:], uint16(int16(clip(sum))))
+	}
+	if p.outFadeRem <= 0 || p.outDec.Finished() {
+		reapAsync(p.outDec)
+		p.outDec = nil
+		p.outFadeRem = 0
 	}
 }
 
@@ -317,14 +453,21 @@ func (p *player) queueNext(i int) {
 	} else {
 		p.queued = i
 	}
-	p.discardPrewarm() // the next target changed; servicePrewarm re-aims next tick
+	// The next target changed; servicePrewarm re-aims next tick. A prewarm
+	// targeting the *current* item is an in-flight pending load — keep it, or
+	// the current song would never get its decoder.
+	if p.prewarmIdx != p.idx {
+		p.discardPrewarm()
+	}
 }
 
 // skip abandons the current item immediately (works while playing or holding).
+// A song cut mid-audio fades to silence rather than hard-cutting.
 func (p *player) skip() {
 	if p.finished {
 		return
 	}
+	p.beginTransition()
 	p.advance()
 }
 
@@ -351,6 +494,7 @@ func (p *player) jumpTo(i int) {
 	if i != p.idx {
 		p.markPlayed(p.idx) // leaving the current item for a different one
 	}
+	p.beginTransition() // fade out a song cut mid-audio (prev/restart/jump)
 	if p.dec != nil {
 		reapAsync(p.dec)
 		p.dec = nil
@@ -475,6 +619,9 @@ func (p *player) bannerVisible() bool {
 	it := p.items[p.idx]
 	if it.Type != services.ItemSong || it.Track == nil {
 		return false
+	}
+	if p.dec == nil {
+		return false // pending load — the banner fades back in with the audio
 	}
 	if p.paused && p.itemBytes == 0 {
 		return false // cued, not yet started
