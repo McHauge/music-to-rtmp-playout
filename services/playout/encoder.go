@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,6 +28,14 @@ type encoder struct {
 	fadeLive string // live banner fade mask (uniform-alpha png)
 	bannerOn bool
 	done     chan struct{}
+
+	// Viz side-channel: with a visualization on, the filtergraph gets its own
+	// copy of the program PCM over loopback TCP instead of tapping [0:a]. The
+	// stdin audio is then consumed ONLY by the AAC encoder, so a slow video
+	// branch (GPU contention, a stalled banner-image open) can freeze the viz
+	// at worst — it can never back-pressure stdin and cut the broadcast audio.
+	vizLn net.Listener
+	vizCh chan []byte // buffered ~5s; Write drops (viz lags) instead of blocking
 }
 
 // overwriteInPlace replaces path's content without the file ever disappearing:
@@ -126,6 +135,15 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 			return nil, err
 		}
 	}
+	// With a visualization on, the filtergraph gets its own PCM copy over
+	// loopback TCP (see encoder.vizCh) so it can never back-pressure stdin.
+	var vizLn net.Listener
+	if audioInGraph {
+		var err error
+		if vizLn, err = net.Listen("tcp", "127.0.0.1:0"); err != nil {
+			return nil, err
+		}
+	}
 
 	args := []string{"-hide_banner", "-loglevel", "warning",
 		// Audio FIRST so it anchors the muxer clock.
@@ -159,16 +177,26 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 				// slower rate (e.g. 1fps) makes the blend's framesync
 				// intermittently drop the mask for whole seconds.
 				args = append(args, "-thread_queue_size", "1", "-loop", "1", "-framerate", itoa(c.FPS), "-f", "image2", "-i", vizMaskPath)
+				// Input 5: the visualization's own PCM feed over loopback TCP.
+				// Keeping the viz off input 0 means the broadcast audio path is
+				// stdin → AAC only — a slow video branch can starve the viz but
+				// never the program audio. The generous thread queue plus the Go
+				// side's buffered channel absorb multi-second video stalls.
+				args = append(args,
+					"-f", "s16le", "-ar", "48000", "-ac", "2",
+					"-thread_queue_size", "512",
+					"-i", "tcp://"+vizLn.Addr().String(),
+				)
 			}
 		}
 
 		filter := buildVideoFilter(c, geom, banner, audioInGraph)
 
 		gop := c.FPS
-		// Audio is always mapped directly from the PCM input, never through the
-		// filtergraph. With the viz on, the graph taps a copy of 0:a for
-		// showfreqs/showwaves only (see buildVideoFilter); the output audio stays
-		// on the simple -map 0:a + -af path, which is what keeps its DTS monotonic.
+		// The broadcast audio is always mapped directly from the PCM input and
+		// never touches the filtergraph (the viz renders from its own TCP copy,
+		// input 5) — that is what keeps the AAC DTS monotonic and makes the
+		// audio immune to video-side stalls.
 		args = append(args, "-filter_complex", filter, "-map", "[v]", "-map", "0:a")
 		// Off low-latency the 4x-rate VBV buffer gives rate control burst
 		// headroom to re-sharpen the banner after it fades in; low-latency
@@ -271,16 +299,48 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 	cmd := exec.Command(c.FFmpegPath, args...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		if vizLn != nil {
+			vizLn.Close()
+		}
 		return nil, err
 	}
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
+		if vizLn != nil {
+			vizLn.Close()
+		}
 		return nil, fmt.Errorf("encoder ffmpeg start failed: %w", err)
 	}
 
 	e := &encoder{cmd: cmd, stdin: stdin, nowTxt: c.NowTxtPath, artLive: c.ArtLivePath, fadeLive: fadeLivePath, bannerOn: banner, done: make(chan struct{})}
+	if vizLn != nil {
+		e.vizLn = vizLn
+		e.vizCh = make(chan []byte, 256) // ~5s of 20ms chunks
+		go vizFeed(vizLn, e.vizCh)
+	}
 	go func() { _ = cmd.Wait(); close(e.done) }()
 	return e, nil
+}
+
+// vizFeed accepts the encoder ffmpeg's single connection to the viz PCM input
+// and pumps chunks from ch into it. Exits when ch closes (encoder Stop) or the
+// peer goes away; chunks that arrive with no consumer are dropped by Write's
+// non-blocking send, so this goroutine can never wedge the pacing loop.
+func vizFeed(ln net.Listener, ch chan []byte) {
+	conn, err := ln.Accept()
+	if err != nil {
+		return // listener closed before ffmpeg connected (startup failure path)
+	}
+	defer conn.Close()
+	for chunk := range ch {
+		if _, err := conn.Write(chunk); err != nil {
+			// ffmpeg is gone or stalled hard; drain until close so senders'
+			// buffered chunks don't linger.
+			for range ch {
+			}
+			return
+		}
+	}
 }
 
 // Write feeds a PCM chunk to the encoder. A write error (EPIPE) means ffmpeg
@@ -288,6 +348,12 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 // or output downstream) — that back-pressures the whole pacing loop, so any
 // stall long enough to be audible is logged as evidence.
 func (e *encoder) Write(p []byte) error {
+	if e.vizCh != nil {
+		select {
+		case e.vizCh <- p: // run discards the chunk after Write, so no copy needed
+		default: // viz feed backed up — drop; the viz lags, the audio doesn't
+		}
+	}
 	start := time.Now()
 	_, err := e.stdin.Write(p)
 	if d := time.Since(start); d > 100*time.Millisecond {
@@ -347,6 +413,12 @@ func (e *encoder) Stop() {
 			_ = e.cmd.Process.Kill()
 		}
 		<-e.done
+	}
+	if e.vizCh != nil {
+		close(e.vizCh) // run has stopped writing by now; lets vizFeed exit
+	}
+	if e.vizLn != nil {
+		e.vizLn.Close()
 	}
 }
 
@@ -412,8 +484,8 @@ func bannerLayout(w, h int) bannerGeom {
 
 // buildVideoFilter assembles the filter_complex for the video output. Inputs:
 // [1:v] background (still or lavfi color), [2:v] cover art and [3:v] fade mask
-// (banner only), [0:a] program PCM (tapped only when a visualization is on —
-// audioInGraph). The background is scaled to the output size FIRST so the
+// (banner only), and with a visualization on ([4:v] pill mask, [5:a] the viz's
+// own PCM feed). The background is scaled to the output size FIRST so the
 // banner overlays in final pixel space; the banner itself is built on a
 // translucent bar-sized canvas so its contents clip at the bar's bounds, then
 // the fade mask multiplies its alpha so the engine can fade it in/out.
@@ -458,11 +530,11 @@ func buildVideoFilter(c encoderConfig, g bannerGeom, banner, audioInGraph bool) 
 
 	last := "bar2"
 	if audioInGraph {
-		// Tap a copy of the program audio for the visualization only, straight
-		// from [0:a]. The AAC output is mapped directly from 0:a (with its own
-		// -af aresample), so it never rides this graph's framesync — an earlier
-		// asplit=2[aout][avis] here routed the output audio through the graph and
-		// delivered it to the AAC encoder out of order (non-monotonic DTS).
+		// The visualization renders from its own PCM feed ([5:a], the loopback
+		// TCP input) — never from [0:a]. The AAC output is mapped directly from
+		// 0:a, so the broadcast audio neither rides this graph's framesync
+		// (which once reordered it into non-monotonic DTS) nor gets
+		// back-pressured when the video branch stalls.
 		// Both styles render one column per pill, get blown up with
 		// nearest-neighbor into uniform chunky bars, then the pill mask
 		// ([4:v]) multiplies the alpha to cut the gaps and round the ends.
@@ -476,12 +548,12 @@ func buildVideoFilter(c encoderConfig, g bannerGeom, banner, audioInGraph bool) 
 			// that crumble to speckles at the alpha threshold below.
 			// Full video rate: each frame spans 1/FPS of audio. A halved rate
 			// (wider time window) was tried and felt choppy/out-of-sync.
-			fmt.Fprintf(&b, "[0:a]aformat=channel_layouts=mono,showwaves=s=%dx%d:mode=cline:rate=%d:scale=sqrt:draw=full[visraw];",
+			fmt.Fprintf(&b, "[5:a]aformat=channel_layouts=mono,showwaves=s=%dx%d:mode=cline:rate=%d:scale=sqrt:draw=full[visraw];",
 				g.pillBars, g.vizH, c.FPS)
 			fmt.Fprintf(&b, "[visraw]scale=%d:%d:flags=neighbor,format=rgba,lutrgb=r=255:g=255:b=255:a='if(gt(val,60),255,0)'[visq];",
 				g.pillsW, g.vizH)
 		default: // "bars"
-			fmt.Fprintf(&b, "[0:a]showfreqs=s=%dx%d:mode=bar:ascale=log:fscale=log:win_size=1024:averaging=4:cmode=combined:colors=white:rate=%d[visraw];",
+			fmt.Fprintf(&b, "[5:a]showfreqs=s=%dx%d:mode=bar:ascale=log:fscale=log:win_size=1024:averaging=4:cmode=combined:colors=white:rate=%d[visraw];",
 				g.pillBars, g.vizH, c.FPS)
 			fmt.Fprintf(&b, "[visraw]scale=%d:%d:flags=neighbor,format=rgba[visq];", g.pillsW, g.vizH)
 		}
