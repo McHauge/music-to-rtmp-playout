@@ -36,7 +36,11 @@ case "$OS" in
       *) echo "Unsupported arch $ARCH"; exit 1 ;;
     esac
     # BtbN static builds (glibc, GitHub-hosted). Self-contained, no deps.
-    url="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-${FF}-gpl.tar.xz"
+    # Pinned to the n7.1 release branch (NOT master): master needs NVIDIA driver
+    # >= 610 for h264_nvenc, but Pascal GPUs (e.g. Quadro P2000) are EOL at the
+    # 580 driver branch, so master's NVENC can't run there. n7.1 needs ~550+.
+    # Note the trailing "-7.1" in the asset name (master has no such suffix).
+    url="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-${FF}-gpl-7.1.tar.xz"
     tmp="$(mktemp -d)"
     curl -L --fail -o "$tmp/ffmpeg.tar.xz" "$url"
     tar -xf "$tmp/ffmpeg.tar.xz" -C "$tmp"

@@ -11,6 +11,12 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o playout .
 FROM debian:bookworm-slim AS tools
 ARG MEDIAMTX_VERSION=v1.9.3
 ARG TARGETARCH=amd64
+# ffmpeg build tag. Pinned to the BtbN n7.1 release branch (NOT master): master
+# now needs NVIDIA driver >= 610 for h264_nvenc, but Pascal (e.g. Quadro P2000)
+# is EOL at the 580 driver branch, so master's NVENC never works on those hosts.
+# The n7.1 build only needs driver ~550+. Note the trailing "-7.1" in the asset
+# name — the master asset has no such suffix.
+ARG FFMPEG_BUILD=ffmpeg-n7.1-latest
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl xz-utils tar \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /tools
@@ -23,8 +29,8 @@ RUN set -eux; \
     # yt-dlp (standalone)
     curl -L --fail -o yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp; \
     chmod +x yt-dlp; \
-    # ffmpeg + ffprobe (BtbN glibc static)
-    curl -L --fail -o ffmpeg.tar.xz "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-${FF}-gpl.tar.xz"; \
+    # ffmpeg + ffprobe (BtbN glibc static). See FFMPEG_BUILD note above re: NVENC/driver pin.
+    curl -L --fail -o ffmpeg.tar.xz "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/${FFMPEG_BUILD}-${FF}-gpl-7.1.tar.xz"; \
     tar -xf ffmpeg.tar.xz; \
     cp "$(find . -type f -name ffmpeg | head -1)" ffmpeg; \
     cp "$(find . -type f -name ffprobe | head -1)" ffprobe; \
