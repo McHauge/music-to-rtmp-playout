@@ -68,9 +68,11 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 	}
 
 	banner := c.VideoEnabled && c.NowOverlay
-	// audioInGraph: the visualization taps the program audio inside the
-	// filtergraph, so the output audio must come from a graph label ([aout])
-	// instead of a direct -map 0:a + -af chain.
+	// audioInGraph: the visualization taps a *copy* of the program audio inside
+	// the filtergraph (showfreqs/showwaves). The output audio is still mapped
+	// directly from 0:a and never routed through the graph — routing it here
+	// (via asplit) coupled it to the video branch's framesync, which reordered
+	// the audio into the AAC encoder and sprayed non-monotonic-DTS warnings.
 	audioInGraph := banner && c.VizStyle != "none"
 	geom := bannerLayout(c.Width, c.Height)
 
@@ -142,12 +144,11 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 		filter := buildVideoFilter(c, geom, banner, audioInGraph)
 
 		gop := c.FPS
-		args = append(args, "-filter_complex", filter, "-map", "[v]")
-		if audioInGraph {
-			args = append(args, "-map", "[aout]")
-		} else {
-			args = append(args, "-map", "0:a")
-		}
+		// Audio is always mapped directly from the PCM input, never through the
+		// filtergraph. With the viz on, the graph taps a copy of 0:a for
+		// showfreqs/showwaves only (see buildVideoFilter); the output audio stays
+		// on the simple -map 0:a + -af path, which is what keeps its DTS monotonic.
+		args = append(args, "-filter_complex", filter, "-map", "[v]", "-map", "0:a")
 		// Off low-latency the 4x-rate VBV buffer gives rate control burst
 		// headroom to re-sharpen the banner after it fades in; low-latency
 		// shrinks it to 1x (~1s) to cut HRD buffering delay. Applies to both
@@ -211,8 +212,11 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 				// The x264 equivalent of NVENC "Ultra Low Latency": no B-frame
 				// reorder, no rate-control/sync look-ahead, slice-threaded (frame
 				// threading adds threads-worth of frames of delay), no scenecut.
+				// mbtree needs a look-ahead window; with rc-lookahead=0 x264 warns
+				// ("lookaheadless mb-tree requires intra refresh or infinite
+				// keyint") and disables it anyway, so turn it off explicitly.
 				x264Params = append(x264Params,
-					"bframes=0", "rc-lookahead=0", "sync-lookahead=0", "sliced-threads=1", "scenecut=0")
+					"bframes=0", "rc-lookahead=0", "sync-lookahead=0", "sliced-threads=1", "scenecut=0", "mbtree=0")
 			}
 			if len(x264Params) > 0 {
 				args = append(args, "-x264-params", strings.Join(x264Params, ":"))
@@ -221,14 +225,19 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 	}
 
 	args = append(args, "-c:a", "aac", "-b:a", c.AudioBitrate, "-ar", "48000", "-ac", "2")
-	if !audioInGraph {
-		args = append(args, "-af", "aresample=async=1:first_pts=0")
-	}
+	// Audio is always mapped directly from 0:a (never through the filtergraph),
+	// so the resampler always applies here as a simple output filter.
+	args = append(args, "-af", "aresample=async=1000:first_pts=0")
 	if c.LowLatency {
 		// Push each packet to the wire as soon as it's muxed instead of letting
 		// the FLV muxer accumulate a buffer.
 		args = append(args, "-flush_packets", "1")
 	}
+	// Never defer a writable packet waiting for the other stream to catch up:
+	// audio is fed slightly ahead of the CFR video (300ms lead + pacing bursts),
+	// so without this the FLV muxer's interleave queue can back up
+	// ("N buffers queued in out_#0:1") and hard re-base the audio timeline.
+	args = append(args, "-max_interleave_delta", "0")
 	args = append(args,
 		// -shortest: the looping video never EOFs on its own, so tie output
 		// length to the audio pipe. Closing stdin then ends the stream cleanly
@@ -454,9 +463,11 @@ func buildVideoFilter(c encoderConfig, g bannerGeom, banner, audioInGraph bool) 
 
 	last := "bar2"
 	if audioInGraph {
-		// Tap the program audio for the visualization; [aout] replaces the
-		// direct -map 0:a + -af path (same aresample, so timing is unchanged).
-		b.WriteString("[0:a]aresample=async=1:first_pts=0,asplit=2[aout][avis];")
+		// Tap a copy of the program audio for the visualization only, straight
+		// from [0:a]. The AAC output is mapped directly from 0:a (with its own
+		// -af aresample), so it never rides this graph's framesync — an earlier
+		// asplit=2[aout][avis] here routed the output audio through the graph and
+		// delivered it to the AAC encoder out of order (non-monotonic DTS).
 		// Both styles render one column per pill, get blown up with
 		// nearest-neighbor into uniform chunky bars, then the pill mask
 		// ([4:v]) multiplies the alpha to cut the gaps and round the ends.
@@ -470,12 +481,12 @@ func buildVideoFilter(c encoderConfig, g bannerGeom, banner, audioInGraph bool) 
 			// that crumble to speckles at the alpha threshold below.
 			// Full video rate: each frame spans 1/FPS of audio. A halved rate
 			// (wider time window) was tried and felt choppy/out-of-sync.
-			fmt.Fprintf(&b, "[avis]aformat=channel_layouts=mono,showwaves=s=%dx%d:mode=cline:rate=%d:scale=sqrt:draw=full[visraw];",
+			fmt.Fprintf(&b, "[0:a]aformat=channel_layouts=mono,showwaves=s=%dx%d:mode=cline:rate=%d:scale=sqrt:draw=full[visraw];",
 				g.pillBars, g.vizH, c.FPS)
 			fmt.Fprintf(&b, "[visraw]scale=%d:%d:flags=neighbor,format=rgba,lutrgb=r=255:g=255:b=255:a='if(gt(val,60),255,0)'[visq];",
 				g.pillsW, g.vizH)
 		default: // "bars"
-			fmt.Fprintf(&b, "[avis]showfreqs=s=%dx%d:mode=bar:ascale=log:fscale=log:win_size=1024:averaging=4:cmode=combined:colors=white:rate=%d[visraw];",
+			fmt.Fprintf(&b, "[0:a]showfreqs=s=%dx%d:mode=bar:ascale=log:fscale=log:win_size=1024:averaging=4:cmode=combined:colors=white:rate=%d[visraw];",
 				g.pillBars, g.vizH, c.FPS)
 			fmt.Fprintf(&b, "[visraw]scale=%d:%d:flags=neighbor,format=rgba[visq];", g.pillsW, g.vizH)
 		}
