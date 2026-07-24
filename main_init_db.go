@@ -71,6 +71,7 @@ func initDB(db *sql.DB) error {
 			video_height INTEGER NOT NULL DEFAULT 0,
 			video_enabled INTEGER NOT NULL DEFAULT 1, -- bool: 0 = audio-only stream
 			video_bitrate TEXT NOT NULL DEFAULT '500k', -- CBR; empty = auto (CRF)
+			video_encoder TEXT NOT NULL DEFAULT 'auto', -- 'auto' | 'cpu' | 'nvenc' (GPU)
 			audio_bitrate TEXT NOT NULL DEFAULT '160k',
 			now_overlay INTEGER NOT NULL DEFAULT 1,   -- bool: "now playing" overlay
 			viz_style TEXT NOT NULL DEFAULT 'bars',   -- banner visualization: 'bars' | 'wave' | 'none'
@@ -100,6 +101,9 @@ func initDB(db *sql.DB) error {
 		return err
 	}
 	if err := ensureColumn(db, "settings", "video_bitrate TEXT NOT NULL DEFAULT '500k'"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "settings", "video_encoder TEXT NOT NULL DEFAULT 'auto'"); err != nil {
 		return err
 	}
 	if err := ensureColumn(db, "settings", "now_overlay INTEGER NOT NULL DEFAULT 1"); err != nil {

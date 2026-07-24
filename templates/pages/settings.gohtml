@@ -72,6 +72,15 @@
                                 <input name="video_bitrate" value="{{$st.VideoBitrate}}" placeholder="500k (blank = auto quality)">
                             </label>
                         </div>
+                        <label class="field">
+                            <span>Video encoder</span>
+                            <select name="video_encoder">
+                                <option value="auto" {{if eq $st.VideoEncoder "auto"}}selected{{end}}>Auto (use GPU if available)</option>
+                                <option value="cpu" {{if eq $st.VideoEncoder "cpu"}}selected{{end}}>CPU (software libx264)</option>
+                                <option value="nvenc" {{if eq $st.VideoEncoder "nvenc"}}selected{{end}}>GPU (NVIDIA NVENC)</option>
+                            </select>
+                            <span class="muted small">GPU falls back to CPU automatically if NVENC isn't available on the host.</span>
+                        </label>
                         <label class="field check-field">
                             <input type="checkbox" name="now_overlay" data-bind:nowbanner {{if $st.NowOverlay}}checked{{end}}>
                             <span>Show "now playing" banner on the video</span>

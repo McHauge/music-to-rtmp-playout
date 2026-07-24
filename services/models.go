@@ -72,6 +72,7 @@ type Settings struct {
 	VideoHeight  int
 	VideoEnabled bool   // false = audio-only stream, no video track
 	VideoBitrate string // CBR rate; empty = auto (CRF)
+	VideoEncoder string // "auto" | "cpu" | "nvenc" — GPU (NVENC) selection
 	AudioBitrate string
 	NowOverlay   bool   // show the "now playing" lower-third banner
 	VizStyle     string // banner visualization: "bars" | "wave" | "none"

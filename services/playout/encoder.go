@@ -1,8 +1,10 @@
 package playout
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -39,6 +41,7 @@ type encoderConfig struct {
 	FPS          int
 	VideoEnabled bool   // false = audio-only stream, no video track
 	VideoBitrate string // CBR rate; empty = auto (CRF)
+	VideoCodec   string // resolved ffmpeg video encoder: "libx264" | "h264_nvenc"
 	AudioBitrate string
 	NowOverlay   bool   // draw the "now playing" lower-third banner
 	VizStyle     string // banner visualization: "bars" | "wave" | "none"
@@ -144,23 +147,41 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 		} else {
 			args = append(args, "-map", "0:a")
 		}
-		// No -tune stillimage: with the banner's animated visualization the
-		// frame has a permanently moving region, and stillimage's psy tuning
-		// makes x264 take many seconds to re-sharpen it after the banner
-		// fades in under a tight CBR budget. preset medium is still cheap at
-		// these low frame rates and buys sharper pills per bit.
-		args = append(args,
-			"-c:v", "libx264", "-preset", "medium",
-			"-pix_fmt", "yuv420p", "-r", itoa(c.FPS), "-g", itoa(gop),
-			"-fps_mode", "cfr",
-		)
-		if c.VideoBitrate != "" {
-			// CBR on the wire (min=max=target + HRD filler). The 4x-rate VBV
-			// buffer gives rate control enough burst headroom to re-sharpen
-			// the banner right after it fades in instead of smearing it for
-			// seconds; the line rate itself stays constant.
-			args = append(args, "-b:v", c.VideoBitrate, "-minrate", c.VideoBitrate, "-maxrate", c.VideoBitrate,
-				"-bufsize", scaleRate(c.VideoBitrate, 4), "-x264-params", "nal-hrd=cbr")
+		if c.VideoCodec == "h264_nvenc" {
+			// GPU path: NVENC uploads the yuv420p system-memory frames itself,
+			// so the CPU filtergraph above is unchanged. -preset p5 leans toward
+			// quality (radio is low-fps, latency non-critical).
+			args = append(args,
+				"-c:v", "h264_nvenc", "-preset", "p5",
+				"-pix_fmt", "yuv420p", "-r", itoa(c.FPS), "-g", itoa(gop),
+				"-fps_mode", "cfr",
+			)
+			if c.VideoBitrate != "" {
+				// NVENC-native CBR (the libx264 -x264-params nal-hrd=cbr flag is
+				// rejected here). The 4x VBV buffer gives the same burst headroom
+				// to re-sharpen the banner after it fades in.
+				args = append(args, "-rc", "cbr", "-b:v", c.VideoBitrate, "-maxrate", c.VideoBitrate,
+					"-bufsize", scaleRate(c.VideoBitrate, 4))
+			}
+		} else {
+			// No -tune stillimage: with the banner's animated visualization the
+			// frame has a permanently moving region, and stillimage's psy tuning
+			// makes x264 take many seconds to re-sharpen it after the banner
+			// fades in under a tight CBR budget. preset medium is still cheap at
+			// these low frame rates and buys sharper pills per bit.
+			args = append(args,
+				"-c:v", "libx264", "-preset", "medium",
+				"-pix_fmt", "yuv420p", "-r", itoa(c.FPS), "-g", itoa(gop),
+				"-fps_mode", "cfr",
+			)
+			if c.VideoBitrate != "" {
+				// CBR on the wire (min=max=target + HRD filler). The 4x-rate VBV
+				// buffer gives rate control enough burst headroom to re-sharpen
+				// the banner right after it fades in instead of smearing it for
+				// seconds; the line rate itself stays constant.
+				args = append(args, "-b:v", c.VideoBitrate, "-minrate", c.VideoBitrate, "-maxrate", c.VideoBitrate,
+					"-bufsize", scaleRate(c.VideoBitrate, 4), "-x264-params", "nal-hrd=cbr")
+			}
 		}
 	}
 
@@ -490,6 +511,44 @@ func findFont() string {
 }
 
 func itoa(n int) string { return fmt.Sprintf("%d", n) }
+
+// DetectNVENC reports whether NVIDIA hardware H.264 encoding is actually usable
+// with this ffmpeg build and host. Presence of h264_nvenc in `-encoders` only
+// proves it was compiled in, not that a GPU/driver is reachable (e.g. inside a
+// container), so this runs a tiny real encode and checks the exit code. Meant to
+// be called once at startup; the result is cached by the caller.
+func DetectNVENC(ffmpegPath string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, ffmpegPath,
+		"-hide_banner", "-loglevel", "error",
+		"-f", "lavfi", "-i", "color=black:s=64x64:r=5", "-t", "0.2",
+		"-c:v", "h264_nvenc", "-f", "null", "-",
+	)
+	return cmd.Run() == nil
+}
+
+// resolveVideoCodec maps a settings preference ("auto"|"cpu"|"nvenc") plus the
+// detected NVENC availability to the concrete ffmpeg encoder name. "nvenc"
+// (forced) still falls back to libx264 when unavailable so a misconfigured host
+// can't take the stream down.
+func resolveVideoCodec(pref string, nvencAvailable bool) string {
+	switch pref {
+	case "cpu":
+		return "libx264"
+	case "nvenc":
+		if nvencAvailable {
+			return "h264_nvenc"
+		}
+		log.Printf("video encoder: 'nvenc' selected but NVENC not available — falling back to libx264")
+		return "libx264"
+	default: // "auto" and any unknown value
+		if nvencAvailable {
+			return "h264_nvenc"
+		}
+		return "libx264"
+	}
+}
 
 // scaleRate multiplies an ffmpeg bitrate ("500k" × 4 → "2000k") for -bufsize.
 // Unparseable rates fall back unchanged, which ffmpeg treats as a 1x buffer.
