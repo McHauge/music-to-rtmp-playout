@@ -1,6 +1,7 @@
 package playout
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -568,15 +569,32 @@ func itoa(n int) string { return fmt.Sprintf("%d", n) }
 // proves it was compiled in, not that a GPU/driver is reachable (e.g. inside a
 // container), so this runs a tiny real encode and checks the exit code. Meant to
 // be called once at startup; the result is cached by the caller.
+//
+// The probe frame is 256x256: NVENC has a minimum frame size and rejects tiny
+// frames with "Frame Dimension less than the minimum supported value", so a
+// 64x64 probe fails even on a fully working GPU. On failure the encoder's stderr
+// is logged so the real reason (no device, driver mismatch, missing nvcuda.dll)
+// is visible instead of a bare "not available".
 func DetectNVENC(ffmpegPath string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, ffmpegPath,
 		"-hide_banner", "-loglevel", "error",
-		"-f", "lavfi", "-i", "color=black:s=64x64:r=5", "-t", "0.2",
+		"-f", "lavfi", "-i", "color=black:s=256x256:r=5", "-t", "0.2",
 		"-c:v", "h264_nvenc", "-f", "null", "-",
 	)
-	return cmd.Run() == nil
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			if i := strings.IndexByte(msg, '\n'); i >= 0 {
+				msg = msg[:i]
+			}
+			log.Printf("NVENC probe failed (%v): %s", err, msg)
+		}
+		return false
+	}
+	return true
 }
 
 // resolveVideoCodec maps a settings preference ("auto"|"cpu"|"nvenc") plus the
