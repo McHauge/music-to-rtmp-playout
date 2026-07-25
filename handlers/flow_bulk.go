@@ -42,7 +42,7 @@ func (app *App) beginBulkSSE(w http.ResponseWriter, r *http.Request, parseFailMs
 // bulkPlaylistID resolves the playlist_id form field and confirms the show
 // exists, reporting over the stream when it does not.
 func (app *App) bulkPlaylistID(r *http.Request, logf logFunc) (int64, bool) {
-	plID, _ := strconv.ParseInt(r.FormValue("playlist_id"), 10, 64)
+	plID := formInt64(r, "playlist_id")
 	pl, err := app.Flow.GetPlaylist(plID)
 	if err != nil || pl == nil {
 		logf("Unknown show.")

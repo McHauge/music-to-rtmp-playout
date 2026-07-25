@@ -15,22 +15,22 @@ func (app *App) CreatePlaylist(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(w, r, "/flow?id="+strconv.FormatInt(id, 10), http.StatusSeeOther)
+	redirectFlow(w, r, id)
 }
 
 // RenamePlaylist updates a show name.
 func (app *App) RenamePlaylist(w http.ResponseWriter, r *http.Request) {
-	id, _ := strconv.ParseInt(r.FormValue("id"), 10, 64)
+	id := formInt64(r, "id")
 	if err := app.Flow.RenamePlaylist(id, r.FormValue("name")); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(w, r, "/flow?id="+strconv.FormatInt(id, 10), http.StatusSeeOther)
+	redirectFlow(w, r, id)
 }
 
 // DeletePlaylist removes a show.
 func (app *App) DeletePlaylist(w http.ResponseWriter, r *http.Request) {
-	id, _ := strconv.ParseInt(r.FormValue("id"), 10, 64)
+	id := formInt64(r, "id")
 	if err := app.Flow.DeletePlaylist(id); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -41,7 +41,7 @@ func (app *App) DeletePlaylist(w http.ResponseWriter, r *http.Request) {
 // AddItem appends a song, break, or gate to a show's flow.
 func (app *App) AddItem(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
-	plID, _ := strconv.ParseInt(r.FormValue("playlist_id"), 10, 64)
+	plID := formInt64(r, "playlist_id")
 	itemType := r.FormValue("type")
 
 	var trackID *int64
@@ -62,24 +62,24 @@ func (app *App) AddItem(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(w, r, "/flow?id="+strconv.FormatInt(plID, 10), http.StatusSeeOther)
+	redirectFlow(w, r, plID)
 }
 
 // DeleteItem removes a flow item.
 func (app *App) DeleteItem(w http.ResponseWriter, r *http.Request) {
-	plID, _ := strconv.ParseInt(r.FormValue("playlist_id"), 10, 64)
-	itemID, _ := strconv.ParseInt(r.FormValue("id"), 10, 64)
+	plID := formInt64(r, "playlist_id")
+	itemID := formInt64(r, "id")
 	if err := app.Flow.DeleteItem(plID, itemID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(w, r, "/flow?id="+strconv.FormatInt(plID, 10), http.StatusSeeOther)
+	redirectFlow(w, r, plID)
 }
 
 // MoveItem reorders one item up or down by swapping positions with its neighbor.
 func (app *App) MoveItem(w http.ResponseWriter, r *http.Request) {
-	plID, _ := strconv.ParseInt(r.FormValue("playlist_id"), 10, 64)
-	itemID, _ := strconv.ParseInt(r.FormValue("id"), 10, 64)
+	plID := formInt64(r, "playlist_id")
+	itemID := formInt64(r, "id")
 	dir := r.FormValue("dir") // "up" | "down"
 
 	items, _ := app.Flow.GetItems(plID)
@@ -106,7 +106,7 @@ func (app *App) MoveItem(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	http.Redirect(w, r, "/flow?id="+strconv.FormatInt(plID, 10), http.StatusSeeOther)
+	redirectFlow(w, r, plID)
 }
 
 // ReorderItems persists a full ordering posted by the drag-and-drop UI as a
@@ -114,7 +114,7 @@ func (app *App) MoveItem(w http.ResponseWriter, r *http.Request) {
 // 204 is enough (see static/flow-dnd.js).
 func (app *App) ReorderItems(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
-	plID, _ := strconv.ParseInt(r.FormValue("playlist_id"), 10, 64)
+	plID := formInt64(r, "playlist_id")
 	var ids []int64
 	for _, part := range strings.Split(r.FormValue("ids"), ",") {
 		if id, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64); err == nil {
@@ -134,8 +134,8 @@ func (app *App) ReorderItems(w http.ResponseWriter, r *http.Request) {
 
 // SetBreakSec updates a break item's length from the inline field in the rundown.
 func (app *App) SetBreakSec(w http.ResponseWriter, r *http.Request) {
-	plID, _ := strconv.ParseInt(r.FormValue("playlist_id"), 10, 64)
-	itemID, _ := strconv.ParseInt(r.FormValue("id"), 10, 64)
+	plID := formInt64(r, "playlist_id")
+	itemID := formInt64(r, "id")
 	sec, _ := strconv.Atoi(r.FormValue("break_sec"))
 	if sec <= 0 {
 		sec = services.DefaultBreakSec
@@ -144,17 +144,17 @@ func (app *App) SetBreakSec(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(w, r, "/flow?id="+strconv.FormatInt(plID, 10), http.StatusSeeOther)
+	redirectFlow(w, r, plID)
 }
 
 // ToggleAutoNext flips an item's auto-continue flag.
 func (app *App) ToggleAutoNext(w http.ResponseWriter, r *http.Request) {
-	plID, _ := strconv.ParseInt(r.FormValue("playlist_id"), 10, 64)
-	itemID, _ := strconv.ParseInt(r.FormValue("id"), 10, 64)
+	plID := formInt64(r, "playlist_id")
+	itemID := formInt64(r, "id")
 	auto := r.FormValue("auto_next") == "on"
 	if err := app.Flow.SetAutoNext(itemID, auto); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(w, r, "/flow?id="+strconv.FormatInt(plID, 10), http.StatusSeeOther)
+	redirectFlow(w, r, plID)
 }

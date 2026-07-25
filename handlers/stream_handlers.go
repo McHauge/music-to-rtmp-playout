@@ -19,8 +19,8 @@ var (
 // StartStream begins streaming the given playlist (?id=), optionally from the
 // flow item at ?at= (clamped by the engine).
 func (app *App) StartStream(w http.ResponseWriter, r *http.Request) {
-	id, _ := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
-	at, _ := strconv.Atoi(r.URL.Query().Get("at"))
+	id := queryInt64(r, "id")
+	at := queryInt(r, "at")
 	// Before NewSSE — the session cookie must go out with the response headers.
 	app.rememberShow(w, r, id)
 	sse := datastar.NewSSE(w, r)
@@ -90,7 +90,7 @@ func (app *App) RestartItem(w http.ResponseWriter, r *http.Request) {
 
 // JumpToItem jumps the live show to the flow item at ?i=.
 func (app *App) JumpToItem(w http.ResponseWriter, r *http.Request) {
-	i, _ := strconv.Atoi(r.URL.Query().Get("i"))
+	i := queryInt(r, "i")
 	app.control(w, r, func() { app.Engine.JumpTo(i) })
 }
 
@@ -122,7 +122,7 @@ func (app *App) StreamSetAutoNext(w http.ResponseWriter, r *http.Request) {
 // StreamRundown re-renders the stopped-state rundown for the playlist picked
 // in the start dropdown (?id=), resetting the start-at selection.
 func (app *App) StreamRundown(w http.ResponseWriter, r *http.Request) {
-	id, _ := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
+	id := queryInt64(r, "id")
 	// Before NewSSE — the session cookie must go out with the response headers.
 	app.rememberShow(w, r, id)
 	sse := datastar.NewSSE(w, r)

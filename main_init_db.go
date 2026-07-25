@@ -89,38 +89,25 @@ func initDB(db *sql.DB) error {
 	}
 
 	// Additive migrations for databases created before these columns existed.
-	if err := ensureColumn(db, "playlists", "default_break_sec INTEGER NOT NULL DEFAULT 20"); err != nil {
-		return err
+	// Append here as the schema grows; ensureColumn is a no-op once the column
+	// is present, so the whole list re-runs harmlessly on every start.
+	migrations := []struct{ table, columnDef string }{
+		{"playlists", "default_break_sec INTEGER NOT NULL DEFAULT 20"},
+		{"settings", "video_width INTEGER NOT NULL DEFAULT 0"},
+		{"settings", "video_height INTEGER NOT NULL DEFAULT 0"},
+		{"settings", "video_enabled INTEGER NOT NULL DEFAULT 1"},
+		{"settings", "video_bitrate TEXT NOT NULL DEFAULT '500k'"},
+		{"settings", "video_encoder TEXT NOT NULL DEFAULT 'auto'"},
+		{"settings", "now_overlay INTEGER NOT NULL DEFAULT 1"},
+		{"settings", "viz_style TEXT NOT NULL DEFAULT 'bars'"},
+		{"settings", "banner_box INTEGER NOT NULL DEFAULT 1"},
+		{"settings", "low_latency INTEGER NOT NULL DEFAULT 1"},
+		{"tracks", "art_path TEXT NOT NULL DEFAULT ''"},
 	}
-	if err := ensureColumn(db, "settings", "video_width INTEGER NOT NULL DEFAULT 0"); err != nil {
-		return err
-	}
-	if err := ensureColumn(db, "settings", "video_height INTEGER NOT NULL DEFAULT 0"); err != nil {
-		return err
-	}
-	if err := ensureColumn(db, "settings", "video_enabled INTEGER NOT NULL DEFAULT 1"); err != nil {
-		return err
-	}
-	if err := ensureColumn(db, "settings", "video_bitrate TEXT NOT NULL DEFAULT '500k'"); err != nil {
-		return err
-	}
-	if err := ensureColumn(db, "settings", "video_encoder TEXT NOT NULL DEFAULT 'auto'"); err != nil {
-		return err
-	}
-	if err := ensureColumn(db, "settings", "now_overlay INTEGER NOT NULL DEFAULT 1"); err != nil {
-		return err
-	}
-	if err := ensureColumn(db, "settings", "viz_style TEXT NOT NULL DEFAULT 'bars'"); err != nil {
-		return err
-	}
-	if err := ensureColumn(db, "settings", "banner_box INTEGER NOT NULL DEFAULT 1"); err != nil {
-		return err
-	}
-	if err := ensureColumn(db, "settings", "low_latency INTEGER NOT NULL DEFAULT 1"); err != nil {
-		return err
-	}
-	if err := ensureColumn(db, "tracks", "art_path TEXT NOT NULL DEFAULT ''"); err != nil {
-		return err
+	for _, m := range migrations {
+		if err := ensureColumn(db, m.table, m.columnDef); err != nil {
+			return err
+		}
 	}
 
 	log.Println("SQLite schema initialized")

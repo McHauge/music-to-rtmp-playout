@@ -28,7 +28,7 @@ func (app *App) UploadClip(w http.ResponseWriter, r *http.Request) {
 
 // DeleteClip removes a clip.
 func (app *App) DeleteClip(w http.ResponseWriter, r *http.Request) {
-	id, _ := strconv.ParseInt(r.FormValue("id"), 10, 64)
+	id := formInt64(r, "id")
 	if id != 0 {
 		_ = app.Soundboard.Delete(id)
 	}
@@ -36,26 +36,20 @@ func (app *App) DeleteClip(w http.ResponseWriter, r *http.Request) {
 }
 
 // PreviewClip serves a clip's original audio file for in-browser pre-listening.
-// http.ServeFile handles Range requests, so the <audio> element can seek.
 func (app *App) PreviewClip(w http.ResponseWriter, r *http.Request) {
-	id, _ := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
-	clip, err := app.Soundboard.Get(id)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	clip, err := app.Soundboard.Get(queryInt64(r, "id"))
+	var path string
+	if clip != nil {
+		path = clip.FilePath
 	}
-	if clip == nil {
-		http.NotFound(w, r)
-		return
-	}
-	http.ServeFile(w, r, clip.FilePath)
+	servePreview(w, r, path, err)
 }
 
 // TriggerClip overlays a clip on the live stream (Datastar @post). Returns an
 // SSE response so the caller can surface errors via the console.
 func (app *App) TriggerClip(w http.ResponseWriter, r *http.Request) {
 	sse := datastar.NewSSE(w, r)
-	id, _ := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
+	id := queryInt64(r, "id")
 	clip, err := app.Soundboard.Get(id)
 	if err != nil || clip == nil {
 		sse.ConsoleError(errClipNotFound)

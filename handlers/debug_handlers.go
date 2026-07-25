@@ -3,7 +3,6 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
-	"strconv"
 )
 
 // Debug endpoints, registered only when PLAYOUT_DIAG is set (see main.go) and
@@ -43,8 +42,8 @@ func (app *App) DebugPlaylists(w http.ResponseWriter, r *http.Request) {
 // DebugStart starts (and immediately plays) a show. ?id= selects the playlist;
 // omitted → the first playlist. ?at= sets the start item. ?play=0 leaves it cued.
 func (app *App) DebugStart(w http.ResponseWriter, r *http.Request) {
-	id, _ := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
-	at, _ := strconv.Atoi(r.URL.Query().Get("at"))
+	id := queryInt64(r, "id")
+	at := queryInt(r, "at")
 	if id == 0 {
 		pls, err := app.Flow.ListPlaylists()
 		if err != nil || len(pls) == 0 {

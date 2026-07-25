@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/starfederation/datastar-go/datastar"
@@ -40,7 +39,7 @@ func (app *App) UploadTrack(w http.ResponseWriter, r *http.Request) {
 
 // DeleteTrack removes a track (file + row).
 func (app *App) DeleteTrack(w http.ResponseWriter, r *http.Request) {
-	id, _ := strconv.ParseInt(r.FormValue("id"), 10, 64)
+	id := formInt64(r, "id")
 	if id != 0 {
 		_ = app.Library.DeleteTrack(id)
 	}
@@ -48,25 +47,19 @@ func (app *App) DeleteTrack(w http.ResponseWriter, r *http.Request) {
 }
 
 // PreviewTrack serves a track's audio file for in-browser pre-listening.
-// http.ServeFile handles Range requests, so the <audio> element can seek.
 func (app *App) PreviewTrack(w http.ResponseWriter, r *http.Request) {
-	id, _ := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
-	t, err := app.Library.GetTrack(id)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	t, err := app.Library.GetTrack(queryInt64(r, "id"))
+	var path string
+	if t != nil {
+		path = t.FilePath
 	}
-	if t == nil {
-		http.NotFound(w, r)
-		return
-	}
-	http.ServeFile(w, r, t.FilePath)
+	servePreview(w, r, path, err)
 }
 
 // EditTrack updates title/artist.
 func (app *App) EditTrack(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
-	id, _ := strconv.ParseInt(r.FormValue("id"), 10, 64)
+	id := formInt64(r, "id")
 	if id != 0 {
 		_ = app.Library.UpdateMeta(id, r.FormValue("title"), r.FormValue("artist"))
 	}

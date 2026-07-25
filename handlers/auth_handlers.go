@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"log"
 	"net/http"
 )
 
@@ -11,16 +10,23 @@ func (app *App) LoginPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
+	app.render(w, "page-login", app.loginPageData(""))
+}
+
+// loginPageData builds the login screen's page data. First run (no accounts
+// yet) switches the form to setup mode; msg, when non-empty, is shown as an
+// error above it.
+func (app *App) loginPageData(msg string) PageData {
 	hasUsers, _ := app.Auth.HasUsers()
-	data := PageData{
+	extra := map[string]any{"Setup": !hasUsers}
+	if msg != "" {
+		extra["Error"] = msg
+	}
+	return PageData{
 		Title: "Sign in",
 		Page:  "login",
 		Theme: app.currentTheme(),
-		Extra: map[string]any{"Setup": !hasUsers},
-	}
-	if err := app.Tmpl.Execute(w, "page-login", data); err != nil {
-		log.Printf("render login: %v", err)
-		http.Error(w, "template error", http.StatusInternalServerError)
+		Extra: extra,
 	}
 }
 
@@ -69,14 +75,8 @@ func (app *App) Logout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
+// loginError re-renders the login screen with msg and a 401.
 func (app *App) loginError(w http.ResponseWriter, r *http.Request, msg string) {
-	hasUsers, _ := app.Auth.HasUsers()
-	data := PageData{
-		Title: "Sign in",
-		Page:  "login",
-		Theme: app.currentTheme(),
-		Extra: map[string]any{"Setup": !hasUsers, "Error": msg},
-	}
 	w.WriteHeader(http.StatusUnauthorized)
-	_ = app.Tmpl.Execute(w, "page-login", data)
+	app.render(w, "page-login", app.loginPageData(msg))
 }
