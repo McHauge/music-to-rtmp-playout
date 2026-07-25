@@ -76,7 +76,7 @@ func (app *App) ImportSpotify(w http.ResponseWriter, r *http.Request) {
 			logf("  silence track — skipped (not downloaded)")
 			continue
 		}
-		if _, err := app.Library.ImportSearch(p, "spotify", func(line string) { logf("%s", line) }); err != nil {
+		if _, err := app.Library.ImportSearch(r.Context(), p, "spotify", func(line string) { logf("%s", line) }); err != nil {
 			logf("  failed: %v", err)
 			failed++
 			continue
@@ -158,7 +158,7 @@ func (app *App) ImportSpotifyToFlow(w http.ResponseWriter, r *http.Request) {
 			needBreak = false
 			continue
 		}
-		track, err := app.Library.ImportSearch(p, "spotify", func(line string) { logf("%s", line) })
+		track, err := app.Library.ImportSearch(r.Context(), p, "spotify", func(line string) { logf("%s", line) })
 		if err != nil {
 			logf("  skipped: %v", err)
 			continue

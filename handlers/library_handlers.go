@@ -1,12 +1,9 @@
 package handlers
 
 import (
-	"fmt"
-	"html"
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/starfederation/datastar-go/datastar"
 )
@@ -86,42 +83,20 @@ func (app *App) ImportYouTube(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var mu sync.Mutex
-	lines := []string{"Starting yt-dlp…"}
-	patch := func() {
-		mu.Lock()
-		defer mu.Unlock()
-		var b strings.Builder
-		b.WriteString(`<div id="import-log" class="import-log">`)
-		// keep the last ~40 lines
-		start := 0
-		if len(lines) > 40 {
-			start = len(lines) - 40
-		}
-		for _, l := range lines[start:] {
-			b.WriteString(html.EscapeString(l))
-			b.WriteString("<br>")
-		}
-		b.WriteString(`</div>`)
-		sse.PatchElements(b.String())
-	}
-	patch()
+	// The progress callback runs synchronously on this goroutine (importVia's
+	// scanner loop), so the shared rolling logger needs no locking.
+	logf := rollingLogger(sse, "import-log")
+	logf("Starting yt-dlp…")
 
-	tracks, err := app.Library.ImportYouTube(url, func(line string) {
-		mu.Lock()
-		lines = append(lines, line)
-		mu.Unlock()
-		patch()
+	tracks, err := app.Library.ImportYouTube(r.Context(), url, func(line string) {
+		logf("%s", line)
 	})
 
-	mu.Lock()
 	if err != nil {
-		lines = append(lines, "Error: "+err.Error())
+		logf("Error: %s", err.Error())
 	} else {
-		lines = append(lines, fmt.Sprintf("Done — imported %d track(s).", len(tracks)))
+		logf("Done — imported %d track(s).", len(tracks))
 	}
-	mu.Unlock()
-	patch()
 
 	// Refresh the track table fragment.
 	app.patchTrackList(sse)

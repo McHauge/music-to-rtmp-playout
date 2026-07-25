@@ -19,14 +19,20 @@ func (app *App) CreatePlaylist(w http.ResponseWriter, r *http.Request) {
 // RenamePlaylist updates a show name.
 func (app *App) RenamePlaylist(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(r.FormValue("id"), 10, 64)
-	_ = app.Flow.RenamePlaylist(id, r.FormValue("name"))
+	if err := app.Flow.RenamePlaylist(id, r.FormValue("name")); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	http.Redirect(w, r, "/flow?id="+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
 // DeletePlaylist removes a show.
 func (app *App) DeletePlaylist(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(r.FormValue("id"), 10, 64)
-	_ = app.Flow.DeletePlaylist(id)
+	if err := app.Flow.DeletePlaylist(id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	http.Redirect(w, r, "/flow", http.StatusSeeOther)
 }
 
@@ -50,7 +56,10 @@ func (app *App) AddItem(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	autoNext := r.FormValue("auto_next") != "off"
-	_, _ = app.Flow.AddItem(plID, itemType, trackID, breakSec, r.FormValue("label"), autoNext)
+	if _, err := app.Flow.AddItem(plID, itemType, trackID, breakSec, r.FormValue("label"), autoNext); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	http.Redirect(w, r, "/flow?id="+strconv.FormatInt(plID, 10), http.StatusSeeOther)
 }
 
@@ -58,7 +67,10 @@ func (app *App) AddItem(w http.ResponseWriter, r *http.Request) {
 func (app *App) DeleteItem(w http.ResponseWriter, r *http.Request) {
 	plID, _ := strconv.ParseInt(r.FormValue("playlist_id"), 10, 64)
 	itemID, _ := strconv.ParseInt(r.FormValue("id"), 10, 64)
-	_ = app.Flow.DeleteItem(plID, itemID)
+	if err := app.Flow.DeleteItem(plID, itemID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	http.Redirect(w, r, "/flow?id="+strconv.FormatInt(plID, 10), http.StatusSeeOther)
 }
 
@@ -86,7 +98,10 @@ func (app *App) MoveItem(w http.ResponseWriter, r *http.Request) {
 		}
 		if swap >= 0 {
 			ids[pos], ids[swap] = ids[swap], ids[pos]
-			_ = app.Flow.Reorder(plID, ids)
+			if err := app.Flow.Reorder(plID, ids); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 	}
 	http.Redirect(w, r, "/flow?id="+strconv.FormatInt(plID, 10), http.StatusSeeOther)
@@ -123,7 +138,10 @@ func (app *App) SetBreakSec(w http.ResponseWriter, r *http.Request) {
 	if sec <= 0 {
 		sec = 20
 	}
-	_ = app.Flow.SetBreakSec(itemID, sec)
+	if err := app.Flow.SetBreakSec(itemID, sec); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	http.Redirect(w, r, "/flow?id="+strconv.FormatInt(plID, 10), http.StatusSeeOther)
 }
 
@@ -132,6 +150,9 @@ func (app *App) ToggleAutoNext(w http.ResponseWriter, r *http.Request) {
 	plID, _ := strconv.ParseInt(r.FormValue("playlist_id"), 10, 64)
 	itemID, _ := strconv.ParseInt(r.FormValue("id"), 10, 64)
 	auto := r.FormValue("auto_next") == "on"
-	_ = app.Flow.SetAutoNext(itemID, auto)
+	if err := app.Flow.SetAutoNext(itemID, auto); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	http.Redirect(w, r, "/flow?id="+strconv.FormatInt(plID, 10), http.StatusSeeOther)
 }

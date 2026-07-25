@@ -187,7 +187,7 @@ func (app *App) ImportYouTubeToFlow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	logf("Starting yt-dlp…")
-	tracks, err := app.Library.ImportYouTube(url, func(line string) { logf("%s", line) })
+	tracks, err := app.Library.ImportYouTube(r.Context(), url, func(line string) { logf("%s", line) })
 	if err != nil {
 		logf("Error: %v", err)
 		return

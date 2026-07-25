@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"database/sql"
 	"io"
 	"os"
@@ -16,6 +17,10 @@ const (
 	Channels       = 2
 	BytesPerSample = 2 // s16le
 )
+
+// decodeClipTimeout bounds the one-shot ffmpeg PCM decode of an uploaded clip
+// so a wedged subprocess can't pin the upload handler.
+const decodeClipTimeout = 2 * time.Minute
 
 // SoundboardService manages uploaded clips. On upload each clip is pre-decoded
 // to raw 48k/stereo/s16le PCM so triggering during a live show is instant
@@ -118,7 +123,9 @@ func (s *SoundboardService) Delete(id int64) error {
 
 // decodeToPCM converts any input to canonical 48k/stereo/s16le raw PCM.
 func (s *SoundboardService) decodeToPCM(in, out string) error {
-	cmd := exec.Command(s.ffmpegPath, "-hide_banner", "-loglevel", "error",
+	ctx, cancel := context.WithTimeout(context.Background(), decodeClipTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, s.ffmpegPath, "-hide_banner", "-loglevel", "error",
 		"-i", in,
 		"-ar", "48000", "-ac", "2", "-f", "s16le",
 		"-y", out)

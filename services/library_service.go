@@ -2,6 +2,7 @@ package services
 
 import (
 	"bufio"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -13,6 +14,17 @@ import (
 	"strconv"
 	"strings"
 	"time"
+)
+
+// Bounds for the self-contained ffmpeg/ffprobe/yt-dlp helpers, which operate on
+// local files or quick metadata calls and should finish in well under these
+// limits — the timeout only fires when a subprocess wedges, so it never pins an
+// upload/import handler indefinitely. The full download path is bounded by the
+// caller's request context instead (cancels on client disconnect).
+const (
+	probeTimeout   = 30 * time.Second // ffprobe duration read
+	artNormTimeout = 60 * time.Second // ffmpeg cover-art crop/scale
+	searchTimeout  = 90 * time.Second // yt-dlp metadata-only search
 )
 
 // LibraryService manages the track library: uploads, yt-dlp imports, metadata.
@@ -118,13 +130,15 @@ func (s *LibraryService) AddUpload(origName string, src io.Reader) (*Track, erro
 // non-nil, receives yt-dlp's stdout/stderr lines for live UI feedback.
 // Returns the tracks the URL resolved to in playlist order, including ones
 // that were already in the library.
-func (s *LibraryService) ImportYouTube(url string, progress func(line string)) ([]Track, error) {
-	return s.importVia(url, "youtube", progress)
+func (s *LibraryService) ImportYouTube(ctx context.Context, url string, progress func(line string)) ([]Track, error) {
+	return s.importVia(ctx, url, "youtube", progress)
 }
 
 // importVia runs yt-dlp on url (a real URL or a ytsearchN: query) and imports
-// each resulting file with the given source tag.
-func (s *LibraryService) importVia(url, source string, progress func(line string)) ([]Track, error) {
+// each resulting file with the given source tag. ctx bounds the (potentially
+// long, playlist-sized) download — pass the request context so a client
+// disconnect kills yt-dlp instead of leaving it pinned.
+func (s *LibraryService) importVia(ctx context.Context, url, source string, progress func(line string)) ([]Track, error) {
 	if strings.TrimSpace(url) == "" {
 		return nil, fmt.Errorf("empty URL")
 	}
@@ -147,8 +161,11 @@ func (s *LibraryService) importVia(url, source string, progress func(line string
 		args = append(args, "--ffmpeg-location", filepath.Dir(s.ffmpegPath))
 	}
 	args = append(args, url)
-	cmd := exec.Command(s.ytdlpPath, args...)
-	stdout, _ := cmd.StdoutPipe()
+	cmd := exec.CommandContext(ctx, s.ytdlpPath, args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("yt-dlp stdout pipe: %w", err)
+	}
 	cmd.Stderr = cmd.Stdout
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("yt-dlp start failed (is it installed?): %w", err)
@@ -178,12 +195,12 @@ func (s *LibraryService) importVia(url, source string, progress func(line string
 // "- Topic" channels) so slowed/sped-up/live re-uploads lose to the real
 // version. Returns the resulting track (possibly a pre-existing library row,
 // deduped by path).
-func (s *LibraryService) ImportSearch(want SpotifyTrack, source string, progress func(line string)) (*Track, error) {
+func (s *LibraryService) ImportSearch(ctx context.Context, want SpotifyTrack, source string, progress func(line string)) (*Track, error) {
 	query := strings.TrimSpace(want.Query())
 	if query == "" {
 		return nil, fmt.Errorf("empty track")
 	}
-	cands, err := s.searchCandidates(query, 5)
+	cands, err := s.searchCandidates(ctx, query, 5)
 	if err != nil {
 		return nil, err
 	}
@@ -201,7 +218,7 @@ func (s *LibraryService) ImportSearch(want SpotifyTrack, source string, progress
 			progress("⚠ " + warn)
 		}
 	}
-	tracks, err := s.importVia("https://www.youtube.com/watch?v="+best.ID, source, progress)
+	tracks, err := s.importVia(ctx, "https://www.youtube.com/watch?v="+best.ID, source, progress)
 	if err != nil {
 		return nil, err
 	}
@@ -220,8 +237,10 @@ type searchCandidate struct {
 }
 
 // searchCandidates fetches metadata for the top n YouTube search results.
-func (s *LibraryService) searchCandidates(query string, n int) ([]searchCandidate, error) {
-	cmd := exec.Command(s.ytdlpPath,
+func (s *LibraryService) searchCandidates(ctx context.Context, query string, n int) ([]searchCandidate, error) {
+	ctx, cancel := context.WithTimeout(ctx, searchTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, s.ytdlpPath,
 		"--flat-playlist", "--dump-json", "--no-download", "--no-warnings",
 		fmt.Sprintf("ytsearch%d:%s", n, query))
 	out, err := cmd.Output()
@@ -464,7 +483,9 @@ func (s *LibraryService) importArt(videoID string) string {
 // canonical size the live banner art swap requires (the encoder's image input
 // must never change dimensions mid-stream).
 func (s *LibraryService) normalizeArt(src, dest string) error {
-	cmd := exec.Command(s.ffmpegPath, "-y", "-hide_banner", "-loglevel", "error",
+	ctx, cancel := context.WithTimeout(context.Background(), artNormTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, s.ffmpegPath, "-y", "-hide_banner", "-loglevel", "error",
 		"-i", src,
 		"-vf", "crop='min(iw,ih)':'min(iw,ih)',scale=300:300",
 		"-frames:v", "1", dest)
@@ -476,7 +497,9 @@ func (s *LibraryService) normalizeArt(src, dest string) error {
 
 // probeDuration returns the media duration in seconds using ffprobe, or 0 on error.
 func (s *LibraryService) probeDuration(path string) float64 {
-	cmd := exec.Command(s.ffprobePath, "-v", "error",
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, s.ffprobePath, "-v", "error",
 		"-show_entries", "format=duration",
 		"-of", "default=noprint_wrappers=1:nokey=1", path)
 	out, err := cmd.Output()
