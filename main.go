@@ -6,6 +6,7 @@ import (
 	"log"
 	"mime"
 	"net/http"
+	_ "net/http/pprof" // registers /debug/pprof handlers on the default mux (PLAYOUT_DIAG)
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -30,6 +31,15 @@ func main() {
 
 	cfg := config.LoadConfig()
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
+
+	// Diagnostics (opt-in via PLAYOUT_DIAG=1): expose net/http/pprof on :6060 for
+	// CPU/goroutine profiling while chasing playback-timing issues.
+	if os.Getenv("PLAYOUT_DIAG") != "" {
+		go func() {
+			log.Println("PLAYOUT_DIAG: pprof listening on http://localhost:6060/debug/pprof/")
+			log.Println(http.ListenAndServe("localhost:6060", nil))
+		}()
+	}
 
 	// Ensure runtime directories exist.
 	for _, d := range []string{
@@ -178,6 +188,18 @@ func main() {
 	// Settings.
 	r.HandleFunc("/api/settings/save", app.RequireAuth(app.SaveSettings)).Methods("POST")
 	r.HandleFunc("/api/settings/bg-preview", app.RequireAuth(app.BgPreview)).Methods("GET")
+
+	// Debug control + stats (localhost, unauthenticated) — only when PLAYOUT_DIAG
+	// is set. Lets an operator drive and observe a show while chasing timing bugs.
+	if os.Getenv("PLAYOUT_DIAG") != "" {
+		r.HandleFunc("/debug/playout/stats", app.DebugStats).Methods("GET")
+		r.HandleFunc("/debug/playout/playlists", app.DebugPlaylists).Methods("GET")
+		r.HandleFunc("/debug/playout/start", app.DebugStart).Methods("GET", "POST")
+		r.HandleFunc("/debug/playout/stop", app.DebugStop).Methods("GET", "POST")
+		r.HandleFunc("/debug/playout/skip", app.DebugSkip).Methods("GET", "POST")
+		r.HandleFunc("/debug/playout/play", app.DebugPlay).Methods("GET", "POST")
+		log.Println("PLAYOUT_DIAG: debug control at http://localhost:8080/debug/playout/{stats,playlists,start,stop}")
+	}
 
 	// Static assets.
 	r.PathPrefix("/static/").Handler(http.StripPrefix("/static/", http.FileServer(http.Dir("./static"))))

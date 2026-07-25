@@ -51,45 +51,6 @@ func pillMaskPNG(w, h, period, pill int) []byte {
 	return buf.Bytes()
 }
 
-// uniformAlphaPNG returns a tiny PNG of uniform alpha a (white fill). The
-// encoder scales it over the banner and multiplies it into the banner's alpha
-// plane, so swapping files with stepped alpha values fades the banner in/out.
-func uniformAlphaPNG(a uint8) []byte {
-	img := image.NewNRGBA(image.Rect(0, 0, 8, 8))
-	for i := 0; i < len(img.Pix); i += 4 {
-		img.Pix[i], img.Pix[i+1], img.Pix[i+2], img.Pix[i+3] = 0xff, 0xff, 0xff, a
-	}
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, img); err != nil {
-		return nil
-	}
-	return buf.Bytes()
-}
-
-var (
-	fadeLevelOnce sync.Once
-	fadeLevelData [][]byte
-)
-
-// fadeLevelPNG returns the pre-encoded uniform-alpha PNG for a banner fade
-// level (0..fadeLevels, clamped). All levels are encoded once on first use so
-// the fade animation never encodes PNGs on the run goroutine's tick.
-func fadeLevelPNG(level int) []byte {
-	fadeLevelOnce.Do(func() {
-		fadeLevelData = make([][]byte, fadeLevels+1)
-		for l := 0; l <= fadeLevels; l++ {
-			fadeLevelData[l] = uniformAlphaPNG(uint8(l * 255 / fadeLevels))
-		}
-	})
-	if level < 0 {
-		level = 0
-	}
-	if level > fadeLevels {
-		level = fadeLevels
-	}
-	return fadeLevelData[level]
-}
-
 // placeholderPNG returns a generated artSize×artSize cover used when a track
 // has no art: the background navy with a vinyl-record motif.
 func placeholderPNG() []byte {

@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/go-zeromq/zmq4"
 )
 
 // encoder is the persistent ffmpeg process that muxes the canonical PCM stream
@@ -26,15 +28,34 @@ type encoder struct {
 	stdin    io.WriteCloser
 	nowTxt   string
 	artLive  string // live banner cover art; "" when the banner is off
-	fadeLive string // live banner fade mask (uniform-alpha png)
 	bannerOn bool
 	done     chan struct{}
 
-	// Viz side-channel: with a visualization on, the filtergraph gets its own
-	// copy of the program PCM over loopback TCP instead of tapping [0:a]. The
-	// stdin audio is then consumed ONLY by the AAC encoder, so a slow video
-	// branch (GPU contention, a stalled banner-image open) can freeze the viz
-	// at worst — it can never back-pressure stdin and cut the broadcast audio.
+	// Banner fade is driven at runtime over ZMQ instead of a fade-mask PNG. The
+	// colorchannelmixer@fade filter's alpha gain (aa) is set by commands sent to
+	// ffmpeg's zmq REP socket; the mask PNG approach re-read the file every frame
+	// (-loop 1 image2) while the engine rewrote it ~15x per fade, and those
+	// re-reads colliding with the rewrites stalled the muxer — a brief audio+video
+	// freeze on every fade-in. zmqSender owns the REQ socket and the send timeline.
+	zmqAddr    string        // "tcp://127.0.0.1:PORT"; "" when the banner is off
+	fadeLevel  atomic.Int32  // latest desired fade level (0..fadeLevels)
+	fadeTickle chan struct{} // cap 1; SetBannerFade pokes it, zmqSender coalesces
+
+	// stdinCh + stdinPump decouple the pacing loop from the pipe:0 write. The FLV
+	// muxer only drains stdin as fast as it can interleave video, so a momentarily
+	// starved video branch (e.g. the viz input below waiting on its TCP feed)
+	// back-pressures pipe:0. If Write blocked on that directly it would freeze the
+	// one loop that also feeds the viz, starving the video branch further — a
+	// self-sustaining stall (observed as a flood of "stdin write stalled" +
+	// "viz feed dropped"). The pump absorbs ~5s of that back-pressure so the loop
+	// keeps producing and the video branch never starves for lack of new audio.
+	stdinCh  chan []byte  // buffered ~5s; drained into pipe:0 by stdinPump
+	stdinErr atomic.Value // first pipe:0 write error (ffmpeg died); surfaced by Write
+
+	// Viz side-channel: with a visualization on, the filtergraph gets its own copy
+	// of the program PCM over loopback TCP instead of tapping [0:a]. The broadcast
+	// audio path is stdin → AAC only; the pump above keeps a slow video branch from
+	// back-pressuring it, so the viz can lag but the program audio cannot.
 	vizLn      net.Listener
 	vizCh      chan []byte  // buffered ~5s; Write drops (viz lags) instead of blocking
 	vizDropped atomic.Int64 // bytes dropped from vizCh; repaid as silence by vizFeed
@@ -80,6 +101,12 @@ type encoderConfig struct {
 
 // startEncoder launches the persistent ffmpeg and returns it with stdin open.
 func startEncoder(c encoderConfig) (*encoder, error) {
+	// Diagnostics override: force a specific video encoder ("libx264"|"h264_nvenc")
+	// without touching Settings, for A/B testing (e.g. isolating NVENC's startup
+	// warm-up). Only honored when PLAYOUT_DIAG is on.
+	if v := os.Getenv("PLAYOUT_DIAG_CODEC"); v != "" && os.Getenv("PLAYOUT_DIAG") != "" {
+		c.VideoCodec = v
+	}
 	if c.FPS <= 0 {
 		c.FPS = 10
 	}
@@ -122,19 +149,24 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 			return nil, err
 		}
 	}
-	fadeLivePath := ""
+	// zmqAddr is the loopback endpoint the banner's zmq filter binds; the fade
+	// commands are sent here. Chosen per-encoder so restarts don't collide.
+	zmqAddr := ""
 	if banner {
-		// The art and fade-mask input files must exist (at their canonical
-		// sizes) before ffmpeg starts; the first publish swaps in the real
-		// cover and fades the banner in once a song actually starts. They are
-		// updated with overwriteInPlace, never renamed, so ffmpeg's per-frame
-		// re-opens can't hit a missing file.
+		// The art input file must exist (at its canonical size) before ffmpeg
+		// starts; the first publish swaps in the real cover once a song starts.
+		// It is updated with overwriteInPlace, never renamed, so ffmpeg's
+		// per-frame re-opens can't hit a missing file. The fade mask is gone —
+		// the banner alpha is driven over ZMQ (see zmqSender).
 		if err := os.WriteFile(c.ArtLivePath, placeholderPNG(), 0o644); err != nil {
 			return nil, err
 		}
-		fadeLivePath = filepath.Join(filepath.Dir(c.ArtLivePath), "banner_fade.png")
-		if err := os.WriteFile(fadeLivePath, fadeLevelPNG(0), 0o644); err != nil {
-			return nil, err
+		if port, err := freePort(); err == nil {
+			zmqAddr = fmt.Sprintf("tcp://127.0.0.1:%d", port)
+		} else {
+			// Extremely unlikely; without a port the banner can't fade in and
+			// would stay hidden, so fail the start rather than air a dead banner.
+			return nil, fmt.Errorf("banner zmq port: %w", err)
 		}
 	}
 	// With a visualization on, the filtergraph gets its own PCM copy over
@@ -156,7 +188,19 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 		// Video input: looping still image if present, else a flat color source.
 		if c.BgImagePath != "" {
 			if _, err := os.Stat(c.BgImagePath); err == nil {
-				args = append(args, "-loop", "1", "-framerate", itoa(c.FPS), "-i", c.BgImagePath)
+				// Pre-scale the still to the output size ONCE. The -loop 1 input
+				// re-decodes its source every frame, so feeding the original
+				// (often a multi-megapixel photo) makes ffmpeg re-decode and
+				// re-downscale it at the video rate — ~a quarter core for a 12MP
+				// JPEG, plus swscaler's full-range "deprecated pixel format"
+				// warning. A pre-scaled rgb24 PNG is trivial to re-decode and
+				// needs no range conversion. On any failure we fall back to the
+				// original path (unchanged behavior).
+				bgInput := c.BgImagePath
+				if scaled, ok := prescaleBackground(c.FFmpegPath, c.BgImagePath, c.Width, c.Height, filepath.Dir(c.ArtLivePath)); ok {
+					bgInput = scaled
+				}
+				args = append(args, "-loop", "1", "-framerate", itoa(c.FPS), "-i", bgInput)
 			} else {
 				args = append(args, colorInput(c)...)
 			}
@@ -164,22 +208,30 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 			args = append(args, colorInput(c)...)
 		}
 		if banner {
-			// Cover art (input 2) and fade mask (input 3). image2 with -loop 1
-			// re-reads the file on every loop iteration, so an in-place
-			// overwrite (never a rename — see overwriteInPlace) updates the
-			// content mid-stream. -thread_queue_size 1 keeps the demuxer from
-			// reading ahead, so an update shows within ~2 frames; re-decoding
-			// these tiny PNGs at the video rate is negligible.
+			// Cover art (input 2). image2 with -loop 1 re-reads the file on every
+			// loop iteration, so an in-place overwrite (never a rename — see
+			// overwriteInPlace) updates the content mid-stream. The art swaps once
+			// per transition while the banner is hidden, so a single re-read
+			// collision at most. thread_queue_size buffers decoded frames so that
+			// re-read hitch can't starve the filtergraph. A queue of N delays a
+			// content update by up to N frames; small enough to be imperceptible
+			// for the banner, big enough to absorb the hitch. (The fade no longer
+			// churns a file — the banner alpha rides ZMQ; see zmqSender.)
+			bannerTQS := "1"
+			if os.Getenv("PLAYOUT_DIAG") != "" {
+				if v := os.Getenv("PLAYOUT_DIAG_TQS"); v != "" {
+					bannerTQS = v
+				}
+			}
 			args = append(args,
-				"-thread_queue_size", "1", "-loop", "1", "-framerate", itoa(c.FPS), "-f", "image2", "-i", c.ArtLivePath,
-				"-thread_queue_size", "1", "-loop", "1", "-framerate", itoa(c.FPS), "-f", "image2", "-i", fadeLivePath,
+				"-thread_queue_size", bannerTQS, "-loop", "1", "-framerate", itoa(c.FPS), "-f", "image2", "-i", c.ArtLivePath,
 			)
 			if audioInGraph {
 				// Static for the whole show, but fed at the video rate: a
 				// slower rate (e.g. 1fps) makes the blend's framesync
 				// intermittently drop the mask for whole seconds.
-				args = append(args, "-thread_queue_size", "1", "-loop", "1", "-framerate", itoa(c.FPS), "-f", "image2", "-i", vizMaskPath)
-				// Input 5: the visualization's own PCM feed over loopback TCP.
+				args = append(args, "-thread_queue_size", bannerTQS, "-loop", "1", "-framerate", itoa(c.FPS), "-f", "image2", "-i", vizMaskPath)
+				// Input 4: the visualization's own PCM feed over loopback TCP.
 				// Keeping the viz off input 0 means the broadcast audio path is
 				// stdin → AAC only — a slow video branch can starve the viz but
 				// never the program audio. The generous thread queue plus the Go
@@ -192,12 +244,12 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 			}
 		}
 
-		filter := buildVideoFilter(c, geom, banner, audioInGraph)
+		filter := buildVideoFilter(c, geom, banner, audioInGraph, zmqAddr)
 
 		gop := c.FPS
 		// The broadcast audio is always mapped directly from the PCM input and
 		// never touches the filtergraph (the viz renders from its own TCP copy,
-		// input 5) — that is what keeps the AAC DTS monotonic and makes the
+		// input 4) — that is what keeps the AAC DTS monotonic and makes the
 		// audio immune to video-side stalls.
 		args = append(args, "-filter_complex", filter, "-map", "[v]", "-map", "0:a")
 		// Off low-latency the 4x-rate VBV buffer gives rate control burst
@@ -214,6 +266,17 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 			// p5 leans toward quality (radio is low-fps); low-latency drops to
 			// p4 with the ull ("ultra low latency") tune and disables B-frame
 			// reorder / rate-control look-ahead / encoder output delay.
+			//
+			// KNOWN: on some GPUs/drivers (e.g. older Pascal), NVENC buffers ~8-10s
+			// of frames before emitting its first packet at process start. That is
+			// a ONE-TIME warm-up at encoder start — it back-pressures the whole
+			// filtergraph (the viz feed backs up and the stream delivers nothing,
+			// then bursts) so a viewer watching a *fresh* show start sees ~10s of
+			// stutter, then perfectly smooth playback (song changes never re-stall,
+			// since the encoder process stays warm). No NVENC flag observed to
+			// avoid it (-delay/-rc-lookahead/-bf/-surfaces/-tune ll|ull all still
+			// buffer); libx264 has no such warm-up. Measured via PLAYOUT_DIAG.
+			// Select the CPU encoder in Settings for a stutter-free start.
 			preset := "p5"
 			if c.LowLatency {
 				preset = "p4"
@@ -314,7 +377,16 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 		return nil, fmt.Errorf("encoder ffmpeg start failed: %w", err)
 	}
 
-	e := &encoder{cmd: cmd, stdin: stdin, nowTxt: c.NowTxtPath, artLive: c.ArtLivePath, fadeLive: fadeLivePath, bannerOn: banner, done: make(chan struct{})}
+	e := &encoder{cmd: cmd, stdin: stdin, nowTxt: c.NowTxtPath, artLive: c.ArtLivePath, zmqAddr: zmqAddr, bannerOn: banner, done: make(chan struct{})}
+	e.stdinCh = make(chan []byte, 256) // ~5s of 20ms chunks; decouples the pacing loop from pipe:0
+	go e.stdinPump()
+	if banner {
+		// Drive the banner fade over ZMQ. The tickle is buffered so a fade level
+		// pushed before zmqSender finishes dialing isn't lost (fadeLevel holds the
+		// latest and the pending tickle survives).
+		e.fadeTickle = make(chan struct{}, 1)
+		go e.zmqSender()
+	}
 	if vizLn != nil {
 		e.vizLn = vizLn
 		e.vizCh = make(chan []byte, 256) // ~5s of 20ms chunks
@@ -370,14 +442,19 @@ func (e *encoder) vizFeed() {
 	}
 }
 
-// Write feeds a PCM chunk to the encoder. A write error (EPIPE) means ffmpeg
-// died. A blocked write means ffmpeg stopped consuming stdin (a stalled input
-// or output downstream) — that back-pressures the whole pacing loop, so any
-// stall long enough to be audible is logged as evidence.
+// Write hands a PCM chunk to the encoder. It never touches stdin directly:
+// stdinPump owns that write so a stalled pipe:0 can't freeze this call (and the
+// viz feed with it). A prior pipe:0 error (ffmpeg died) is surfaced here so the
+// pacing loop stops the show. run allocates a fresh chunk per tick and discards
+// it after Write, so both the viz send and the pump handoff can retain it
+// without copying.
 func (e *encoder) Write(p []byte) error {
+	if v := e.stdinErr.Load(); v != nil {
+		return v.(error)
+	}
 	if e.vizCh != nil {
 		select {
-		case e.vizCh <- p: // run discards the chunk after Write, so no copy needed
+		case e.vizCh <- p:
 		default:
 			// Viz feed backed up — drop rather than block, but account for the
 			// bytes so vizFeed repays them as silence and the viz timeline
@@ -385,12 +462,33 @@ func (e *encoder) Write(p []byte) error {
 			e.vizDropped.Add(int64(len(p)))
 		}
 	}
-	start := time.Now()
-	_, err := e.stdin.Write(p)
-	if d := time.Since(start); d > 100*time.Millisecond {
-		log.Printf("playout: encoder stdin write stalled %dms — ffmpeg not consuming audio", d.Milliseconds())
+	// Buffered (~5s). Immediate while pipe:0 keeps up; blocks only if ffmpeg
+	// stalls its output for the whole buffer — a real sustained failure, not the
+	// transient muxer starvation the buffer exists to ride through.
+	e.stdinCh <- p
+	return nil
+}
+
+// stdinPump drains stdinCh into ffmpeg's pipe:0, off the pacing loop. Closing
+// stdinCh (Stop) flushes the remaining chunks and then EOFs the pipe (via the
+// deferred Close), which is what -shortest keys the clean FLV shutdown off. A
+// write error means ffmpeg exited; it's recorded for Write to surface, and the
+// channel is drained so senders never block on a dead pipe.
+func (e *encoder) stdinPump() {
+	defer e.stdin.Close()
+	for p := range e.stdinCh {
+		start := time.Now()
+		_, err := e.stdin.Write(p)
+		if d := time.Since(start); d > 100*time.Millisecond {
+			log.Printf("playout: encoder stdin write stalled %dms — ffmpeg not consuming audio", d.Milliseconds())
+		}
+		if err != nil {
+			e.stdinErr.Store(err)
+			for range e.stdinCh { // drain until Stop closes the channel
+			}
+			return
+		}
 	}
-	return err
 }
 
 // SetNowPlaying updates the overlay text in place (see overwriteInPlace —
@@ -423,20 +521,95 @@ func (e *encoder) SetNowArt(src string) {
 // fadeLevels quantizes banner fade alpha; level 0 = hidden, fadeLevels = shown.
 const fadeLevels = 15
 
-// SetBannerFade sets the fade mask to level (0..fadeLevels). The engine steps
-// the level over time to animate the banner in and out. The level PNGs are
-// pre-encoded (fadeLevelPNG), so this is a lookup plus a ~100-byte file write.
+// SetBannerFade sets the banner fade to level (0..fadeLevels). The engine steps
+// the level over time to animate the banner in and out. This only stamps the
+// latest level and pokes zmqSender — it never blocks the pacing loop (a full
+// tickle is dropped; fadeLevel still holds the newest value for the sender).
 func (e *encoder) SetBannerFade(level int) {
 	if !e.bannerOn {
 		return
 	}
-	overwriteInPlace(e.fadeLive, fadeLevelPNG(level))
+	if level < 0 {
+		level = 0
+	}
+	if level > fadeLevels {
+		level = fadeLevels
+	}
+	e.fadeLevel.Store(int32(level))
+	select {
+	case e.fadeTickle <- struct{}{}:
+	default:
+	}
 }
 
-// Stop closes stdin (audio EOF → -shortest ends the stream and finalizes the
-// FLV) and reaps the process, falling back to a kill if ffmpeg hangs.
+// zmqSender owns the ZMQ REQ socket and translates fade levels into
+// colorchannelmixer@fade "aa" (alpha gain) commands to ffmpeg's zmq REP socket.
+// REQ/REP is strict lockstep — every Send is paired with a Recv. It coalesces:
+// only the newest level is sent, so a burst of SetBannerFade calls during a fade
+// collapses to at most one command per completed round-trip. Exits when the
+// encoder process ends (done closed) or the socket errors (ffmpeg gone).
+func (e *encoder) zmqSender() {
+	req := zmq4.NewReq(context.Background())
+	defer req.Close()
+	// ffmpeg binds its REP socket a moment after process start; retry the dial.
+	dialed := false
+	for i := 0; i < 50; i++ {
+		if err := req.Dial(e.zmqAddr); err == nil {
+			dialed = true
+			break
+		}
+		select {
+		case <-e.done:
+			return
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	if !dialed {
+		log.Printf("playout: banner ZMQ dial failed (%s) — banner fade disabled", e.zmqAddr)
+		return
+	}
+	last := int32(-1)
+	for {
+		select {
+		case <-e.done:
+			return
+		case <-e.fadeTickle:
+		}
+		lvl := e.fadeLevel.Load()
+		if lvl == last {
+			continue
+		}
+		last = lvl
+		cmd := fmt.Sprintf("colorchannelmixer@fade aa %.4f", float64(lvl)/float64(fadeLevels))
+		if err := req.Send(zmq4.NewMsgString(cmd)); err != nil {
+			log.Printf("playout: banner ZMQ send failed: %v", err)
+			return
+		}
+		if _, err := req.Recv(); err != nil { // REQ/REP lockstep
+			log.Printf("playout: banner ZMQ recv failed: %v", err)
+			return
+		}
+	}
+}
+
+// freePort reserves an ephemeral loopback TCP port and returns its number. The
+// listener is closed immediately, so there is a small window before the zmq
+// filter re-binds it; acceptable since only one encoder runs at a time.
+func freePort() (int, error) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	defer ln.Close()
+	return ln.Addr().(*net.TCPAddr).Port, nil
+}
+
+// Stop closes stdinCh so stdinPump flushes any buffered PCM and then EOFs pipe:0
+// (→ -shortest ends the stream and finalizes the FLV), and reaps the process,
+// falling back to a kill if ffmpeg hangs. Safe because run's defer calls Stop
+// only after the pacing loop has stopped calling Write.
 func (e *encoder) Stop() {
-	_ = e.stdin.Close()
+	close(e.stdinCh)
 	select {
 	case <-e.done:
 	case <-time.After(3 * time.Second):
@@ -459,6 +632,30 @@ func (e *encoder) Done() <-chan struct{} { return e.done }
 func colorInput(c encoderConfig) []string {
 	return []string{"-f", "lavfi", "-i",
 		fmt.Sprintf("color=c=0x0a1628:s=%dx%d:r=%d", c.Width, c.Height, c.FPS)}
+}
+
+// prescaleBackground renders the still background to a single output-sized rgb24
+// PNG (dest dir/"bg_scaled.png") so the persistent encoder's -loop 1 input can
+// re-decode a trivially small image every frame instead of re-decoding and
+// re-downscaling the original (potentially many-megapixel) source. It matches the
+// filtergraph's scale=W:H exactly (stretch, no aspect preservation), so framing is
+// unchanged. Returns the scaled path and true on success; on any failure the
+// caller feeds the original image (unchanged behavior). Bounded so a pathological
+// source can't wedge stream startup.
+func prescaleBackground(ffmpegPath, src string, w, h int, destDir string) (string, bool) {
+	dest := filepath.Join(destDir, "bg_scaled.png")
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, ffmpegPath,
+		"-hide_banner", "-loglevel", "error", "-y",
+		"-i", src,
+		"-vf", fmt.Sprintf("scale=%d:%d", w, h),
+		"-frames:v", "1", "-pix_fmt", "rgb24", dest,
+	)
+	if err := cmd.Run(); err != nil {
+		return "", false
+	}
+	return dest, true
 }
 
 // bannerGeom is the lower-third layout: the bar's position in final output
@@ -514,21 +711,23 @@ func bannerLayout(w, h int) bannerGeom {
 }
 
 // buildVideoFilter assembles the filter_complex for the video output. Inputs:
-// [1:v] background (still or lavfi color), [2:v] cover art and [3:v] fade mask
-// (banner only), and with a visualization on ([4:v] pill mask, [5:a] the viz's
-// own PCM feed). The background is scaled to the output size FIRST so the
-// banner overlays in final pixel space; the banner itself is built on a
-// translucent bar-sized canvas so its contents clip at the bar's bounds, then
-// the fade mask multiplies its alpha so the engine can fade it in/out.
-func buildVideoFilter(c encoderConfig, g bannerGeom, banner, audioInGraph bool) string {
+// [1:v] background (still or lavfi color), [2:v] cover art (banner only), and
+// with a visualization on ([3:v] pill mask, [4:a] the viz's own PCM feed). The
+// background is scaled to the output size FIRST so the banner overlays in final
+// pixel space; the banner itself is built on a translucent bar-sized canvas so
+// its contents clip at the bar's bounds. The banner alpha is scaled by the
+// colorchannelmixer@fade filter, whose "aa" gain the engine drives at runtime
+// over ZMQ (zmqBind is the zmq filter's bind endpoint) to fade it in/out — no
+// per-frame mask file to re-read. The zmq filter is a pass-through spliced onto
+// the continuous background stream so it services commands every frame.
+func buildVideoFilter(c encoderConfig, g bannerGeom, banner, audioInGraph bool, zmqBind string) string {
 	if !banner {
 		return fmt.Sprintf("[1:v]scale=%d:%d,setsar=1,format=yuv420p,fps=%d[v]", c.Width, c.Height, c.FPS)
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "[1:v]scale=%d:%d,setsar=1,fps=%d[bg];", c.Width, c.Height, c.FPS)
+	fmt.Fprintf(&b, "[1:v]zmq=bind_address=%s,scale=%d:%d,setsar=1,fps=%d[bg];", zmqBindArg(zmqBind), c.Width, c.Height, c.FPS)
 	fmt.Fprintf(&b, "[2:v]scale=%d:%d[art];", g.art, g.art)
-	fmt.Fprintf(&b, "[3:v]scale=%d:%d,format=rgba[fmask];", g.barW, g.barH)
 	// The banner canvas: the translucent box, or a fully transparent surface
 	// of the same size when the box is turned off.
 	boxColor := "black@0.55"
@@ -561,14 +760,14 @@ func buildVideoFilter(c encoderConfig, g bannerGeom, banner, audioInGraph bool) 
 
 	last := "bar2"
 	if audioInGraph {
-		// The visualization renders from its own PCM feed ([5:a], the loopback
+		// The visualization renders from its own PCM feed ([4:a], the loopback
 		// TCP input) — never from [0:a]. The AAC output is mapped directly from
 		// 0:a, so the broadcast audio neither rides this graph's framesync
 		// (which once reordered it into non-monotonic DTS) nor gets
 		// back-pressured when the video branch stalls.
 		// Both styles render one column per pill, get blown up with
 		// nearest-neighbor into uniform chunky bars, then the pill mask
-		// ([4:v]) multiplies the alpha to cut the gaps and round the ends.
+		// ([3:v]) multiplies the alpha to cut the gaps and round the ends.
 		switch c.VizStyle {
 		case "wave":
 			// Centered amplitude envelope (audiogram look). Mono downmix on
@@ -579,25 +778,36 @@ func buildVideoFilter(c encoderConfig, g bannerGeom, banner, audioInGraph bool) 
 			// that crumble to speckles at the alpha threshold below.
 			// Full video rate: each frame spans 1/FPS of audio. A halved rate
 			// (wider time window) was tried and felt choppy/out-of-sync.
-			fmt.Fprintf(&b, "[5:a]aformat=channel_layouts=mono,showwaves=s=%dx%d:mode=cline:rate=%d:scale=sqrt:draw=full[visraw];",
+			fmt.Fprintf(&b, "[4:a]aformat=channel_layouts=mono,showwaves=s=%dx%d:mode=cline:rate=%d:scale=sqrt:draw=full[visraw];",
 				g.pillBars, g.vizH, c.FPS)
 			fmt.Fprintf(&b, "[visraw]scale=%d:%d:flags=neighbor,format=rgba,lutrgb=r=255:g=255:b=255:a='if(gt(val,60),255,0)'[visq];",
 				g.pillsW, g.vizH)
 		default: // "bars"
-			fmt.Fprintf(&b, "[5:a]showfreqs=s=%dx%d:mode=bar:ascale=log:fscale=log:win_size=1024:averaging=4:cmode=combined:colors=white:rate=%d[visraw];",
+			fmt.Fprintf(&b, "[4:a]showfreqs=s=%dx%d:mode=bar:ascale=log:fscale=log:win_size=1024:averaging=4:cmode=combined:colors=white:rate=%d[visraw];",
 				g.pillBars, g.vizH, c.FPS)
 			fmt.Fprintf(&b, "[visraw]scale=%d:%d:flags=neighbor,format=rgba[visq];", g.pillsW, g.vizH)
 		}
-		fmt.Fprintf(&b, "[4:v]scale=%d:%d,format=rgba[pmask];", g.pillsW, g.vizH)
+		fmt.Fprintf(&b, "[3:v]scale=%d:%d,format=rgba[pmask];", g.pillsW, g.vizH)
 		b.WriteString("[visq][pmask]blend=c3_mode=multiply[vis];")
 		fmt.Fprintf(&b, "[bar2][vis]overlay=x=%d:y=%d:format=auto[bar3];", g.pillsX, g.vizY)
 		last = "bar3"
 	}
-	// blend outputs the top layer's (banner's) color planes and multiplies the
-	// alpha planes, so the mask's uniform alpha scales the whole banner.
-	fmt.Fprintf(&b, "[%s]format=rgba[bnr0];[bnr0][fmask]blend=c3_mode=multiply[bnr];", last)
+	// colorchannelmixer@fade scales only the alpha plane (aa gain) uniformly, so
+	// setting aa in 0..1 fades the whole banner in/out. It starts at 0 (hidden,
+	// matching the engine's fadeAlpha=0 at startup); the engine drives aa up/down
+	// over ZMQ. Named "@fade" so the zmq command can target this instance.
+	fmt.Fprintf(&b, "[%s]format=rgba,colorchannelmixer@fade=aa=0[bnr];", last)
 	fmt.Fprintf(&b, "[bg][bnr]overlay=x=%d:y=%d:format=auto[bv];[bv]format=yuv420p[v]", g.barX, g.barY)
 	return b.String()
+}
+
+// zmqBindArg formats a "tcp://host:port" endpoint for use as the zmq filter's
+// bind_address inside a filtergraph. ffmpeg's option parser treats ':' as an
+// option separator even mid-value, and the graph parser strips one backslash
+// level, so each colon must be double-backslash escaped (verified empirically:
+// a single backslash is stripped and the bind fails to parse).
+func zmqBindArg(addr string) string {
+	return strings.ReplaceAll(addr, ":", "\\\\:")
 }
 
 // escapeFilterPath makes a filesystem path safe inside an ffmpeg filtergraph

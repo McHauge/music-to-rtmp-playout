@@ -2,6 +2,7 @@ package playout
 
 import (
 	"log"
+	"os"
 	"sync"
 	"time"
 
@@ -38,6 +39,21 @@ type Status struct {
 	Played map[int]bool `json:"-"`
 }
 
+// DiagSnapshot is the per-second real-time health of the run loop, exposed for
+// the debug endpoint (PLAYOUT_DIAG). Clean output PTS can hide bursty delivery;
+// these numbers show the loop cadence directly.
+type DiagSnapshot struct {
+	WritesPerSec  int   `json:"writesPerSec"`
+	MaxWriteGapMs int64 `json:"maxWriteGapMs"`
+	MaxPrewarmMs  int64 `json:"maxPrewarmMs"`
+	MaxPublishMs  int64 `json:"maxPublishMs"`
+	StdinQ        int   `json:"stdinQ"`
+	StdinCap      int   `json:"stdinCap"`
+	VizQ          int   `json:"vizQ"`
+	VizCap        int   `json:"vizCap"`
+	VizDropTotal  int64 `json:"vizDropTotal"`
+}
+
 // EngineConfig holds static dependencies for the engine.
 type EngineConfig struct {
 	FFmpegPath     string
@@ -65,7 +81,16 @@ type Engine struct {
 
 	subsMu sync.Mutex
 	subs   map[chan Status]struct{}
+
+	diagMu   sync.Mutex
+	diagSnap DiagSnapshot
 }
+
+// setDiag / Diag publish the latest run-loop health snapshot for the debug endpoint.
+func (e *Engine) setDiag(s DiagSnapshot) { e.diagMu.Lock(); e.diagSnap = s; e.diagMu.Unlock() }
+
+// Diag returns the latest run-loop health snapshot (zero value when idle).
+func (e *Engine) Diag() DiagSnapshot { e.diagMu.Lock(); defer e.diagMu.Unlock(); return e.diagSnap }
 
 type cmdKind int
 
@@ -262,7 +287,7 @@ func (e *Engine) run(enc *encoder, items []services.FlowItem, vmix *voiceMixer, 
 	lastArt := "\x00" // sentinel: first publish always installs the art/placeholder
 
 	// Banner fade state: fadeAlpha animates toward 1 (shown) / 0 (hidden) over
-	// fadeDur; quantized levels are pushed to the encoder's fade mask.
+	// fadeDur; quantized levels are pushed to the encoder over ZMQ (SetBannerFade).
 	const fadeDur = 0.6 // seconds for a full fade in/out
 	fadeAlpha := 0.0    // encoder starts with the mask at 0 (hidden)
 	fadeWritten := 0
@@ -333,6 +358,16 @@ func (e *Engine) run(enc *encoder, items []services.FlowItem, vmix *voiceMixer, 
 	ticker := time.NewTicker(5 * time.Millisecond)
 	defer ticker.Stop()
 
+	// Real-time loop diagnostics (opt-in via PLAYOUT_DIAG=1). Clean output PTS can
+	// still ride on bursty *delivery*; this measures the loop cadence directly —
+	// the max wall-clock gap between encoder writes, time in servicePrewarm/publish,
+	// and the encoder buffer depths — so a stall that jitters delivery is visible.
+	diag := os.Getenv("PLAYOUT_DIAG") != ""
+	diagStart := time.Now()
+	diagLastWr := time.Now()
+	var diagWrites int
+	var diagMaxGap, diagMaxPrew, diagMaxPub time.Duration
+
 	for {
 		// Drain any pending control commands.
 		drained := false
@@ -383,7 +418,13 @@ func (e *Engine) run(enc *encoder, items []services.FlowItem, vmix *voiceMixer, 
 
 		// Adopt any ready prewarmed decoder (before fill can consume it) and, when
 		// the current item nears its end, spawn the next song's decoder off-thread.
+		tPrew := time.Now()
 		p.servicePrewarm()
+		if diag {
+			if d := time.Since(tPrew); d > diagMaxPrew {
+				diagMaxPrew = d
+			}
+		}
 
 		// Pace: write chunks until we've produced up to (elapsed + lead).
 		target := int64(time.Since(start).Seconds()*sampleRate) + lead
@@ -398,11 +439,42 @@ func (e *Engine) run(enc *encoder, items []services.FlowItem, vmix *voiceMixer, 
 				e.broadcast(s)
 				return
 			}
+			if diag {
+				if g := time.Since(diagLastWr); g > diagMaxGap {
+					diagMaxGap = g
+				}
+				diagLastWr = time.Now()
+				diagWrites++
+			}
 			written += chunkFrames
 		}
 
+		tPub := time.Now()
 		publish()
 		e.broadcast(e.Status())
+		if diag {
+			if d := time.Since(tPub); d > diagMaxPub {
+				diagMaxPub = d
+			}
+			if time.Since(diagStart) >= time.Second {
+				snap := DiagSnapshot{
+					WritesPerSec:  diagWrites,
+					MaxWriteGapMs: diagMaxGap.Milliseconds(),
+					MaxPrewarmMs:  diagMaxPrew.Milliseconds(),
+					MaxPublishMs:  diagMaxPub.Milliseconds(),
+					StdinQ:        len(enc.stdinCh), StdinCap: cap(enc.stdinCh),
+					VizQ: len(enc.vizCh), VizCap: cap(enc.vizCh),
+					VizDropTotal: enc.vizDropped.Load(),
+				}
+				e.setDiag(snap)
+				log.Printf("playout DIAG: writes/s=%d maxWriteGap=%dms maxPrewarm=%dms maxPublish=%dms stdinQ=%d/%d vizQ=%d/%d vizDrop=%d",
+					snap.WritesPerSec, snap.MaxWriteGapMs, snap.MaxPrewarmMs, snap.MaxPublishMs,
+					snap.StdinQ, snap.StdinCap, snap.VizQ, snap.VizCap, snap.VizDropTotal)
+				diagStart = time.Now()
+				diagWrites = 0
+				diagMaxGap, diagMaxPrew, diagMaxPub = 0, 0, 0
+			}
+		}
 
 		select {
 		case <-enc.Done():
