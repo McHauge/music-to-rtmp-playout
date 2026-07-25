@@ -1,0 +1,10 @@
+{{/* Rolling progress log for the SSE import/bulk handlers. Data: {ID, Lines}.
+     Re-patched on every line by App.rollingLogger; the div id varies because a
+     page can host more than one of these (bulk-log, import-log, spotify-log). */}}
+{{define "import-log"}}
+<div id="{{.ID}}" class="import-log">{{range .Lines}}{{if warn .}}<span class="log-warn">{{.}}</span>{{else}}{{.}}{{end}}<br>{{end}}</div>
+{{end}}
+
+{{/* The flow builder's estimated-runtime badge, re-patched after a bulk add.
+     Data: the runtime in seconds. Must match the markup in pages/flow.gohtml. */}}
+{{define "flow-runtime"}}<strong id="flow-runtime">{{fmtDuration .}}</strong>{{end}}

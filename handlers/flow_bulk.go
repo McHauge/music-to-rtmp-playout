@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"fmt"
-	"html"
 	"net/http"
 	"strconv"
 	"strings"
@@ -31,7 +30,7 @@ func (app *App) beginBulkSSE(w http.ResponseWriter, r *http.Request, parseFailMs
 	parseErr := r.ParseMultipartForm(bulkFormMemory)
 
 	sse := datastar.NewSSE(w, r)
-	logf := rollingLogger(sse, "bulk-log")
+	logf := app.rollingLogger(sse, "bulk-log")
 	if parseErr != nil {
 		logf(parseFailMsg, parseErr)
 		return sse, logf, false
@@ -111,43 +110,28 @@ func (a *flowAppender) addBreak(sec int) {
 	a.needBreak = false
 }
 
-// rollingLogger returns a printf-style logger that re-patches the given div
-// with a rolling 40-line buffer on every call. Warning/failure lines are
-// tinted so they stand out in the stream.
-func rollingLogger(sse *datastar.ServerSentEventGenerator, divID string) func(format string, args ...any) {
+// importLogLines is how much scrollback the rolling import log keeps; older
+// lines are dropped so a 500-track import doesn't re-send a growing document on
+// every progress line.
+const importLogLines = 40
+
+// rollingLogger returns a printf-style logger that re-patches divID with the
+// last importLogLines lines on every call. The markup lives in the import-log
+// partial, and html/template does the escaping.
+func (app *App) rollingLogger(sse *datastar.ServerSentEventGenerator, divID string) logFunc {
 	var lines []string
 	return func(format string, args ...any) {
 		lines = append(lines, fmt.Sprintf(format, args...))
-		var b strings.Builder
-		b.WriteString(`<div id="` + divID + `" class="import-log">`)
-		start := 0
-		if len(lines) > 40 {
-			start = len(lines) - 40
+		if len(lines) > importLogLines {
+			lines = lines[len(lines)-importLogLines:]
 		}
-		for _, l := range lines[start:] {
-			if isWarnLine(l) {
-				b.WriteString(`<span class="log-warn">`)
-				b.WriteString(html.EscapeString(l))
-				b.WriteString(`</span>`)
-			} else {
-				b.WriteString(html.EscapeString(l))
-			}
-			b.WriteString("<br>")
+		out, err := app.Tmpl.Render("import-log", map[string]any{"ID": divID, "Lines": lines})
+		if err != nil {
+			sse.ConsoleError(err)
+			return
 		}
-		b.WriteString(`</div>`)
-		sse.PatchElements(b.String())
+		sse.PatchElements(out)
 	}
-}
-
-// isWarnLine reports whether a log line should be highlighted as a warning.
-func isWarnLine(l string) bool {
-	l = strings.ToLower(strings.TrimSpace(l))
-	for _, p := range []string{"⚠", "warning:", "failed:", "skipped:", "error:"} {
-		if strings.HasPrefix(l, p) {
-			return true
-		}
-	}
-	return false
 }
 
 // BulkUploadToFlow uploads many audio files and appends each to the show's
@@ -257,7 +241,9 @@ func (app *App) patchFlowBuilder(sse *datastar.ServerSentEventGenerator, playlis
 	sse.PatchElements(out)
 
 	if runtime, err := app.Flow.EstimateRuntimeSec(playlistID); err == nil {
-		sse.PatchElements(`<strong id="flow-runtime">` + fmtDuration(runtime) + `</strong>`)
+		if badge, err := app.Tmpl.Render("flow-runtime", runtime); err == nil {
+			sse.PatchElements(badge)
+		}
 	}
 	if tracks, err := app.Library.ListTracks(); err == nil {
 		if sel, err := app.Tmpl.Render("flow-song-select", map[string]any{"Tracks": tracks}); err == nil {

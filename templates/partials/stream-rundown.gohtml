@@ -23,11 +23,11 @@
         <span class="flow-desc">
             {{if and $.Running (eq $i $.ItemIndex) (or $.Paused $.Holding)}}⏸ {{end}}
             {{if eq $it.Type "song"}}
-                {{if $it.Track}}🎵 {{if $it.Track.Artist}}{{$it.Track.Artist}} — {{end}}{{$it.Track.Title}}{{else}}🎵 (missing track){{end}}
+                {{template "item-song-desc" $it}}
             {{else if eq $it.Type "break"}}
                 ⏲ Break — {{$it.BreakSec}}s
             {{else}}
-                ⏸ {{if $it.Label}}Hold: {{$it.Label}}{{else}}Manual hold{{end}}
+                {{template "item-hold-desc" $it}}
             {{end}}
         </span>
         <span class="flow-time">

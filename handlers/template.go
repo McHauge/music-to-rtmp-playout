@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html/template"
 	"path/filepath"
+	"strings"
 
 	"music-to-rtmp-playout/services"
 )
@@ -33,6 +34,18 @@ var themeList = []ThemeEntry{
 	{"slate", "Slate"},
 }
 
+// isWarnLine reports whether an import-log line should be highlighted as a
+// warning. Exposed to templates as the "warn" func.
+func isWarnLine(l string) bool {
+	l = strings.ToLower(strings.TrimSpace(l))
+	for _, p := range []string{"⚠", "warning:", "failed:", "skipped:", "error:"} {
+		if strings.HasPrefix(l, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // isValidTheme reports whether name is a known theme.
 func isValidTheme(name string) bool {
 	for _, t := range themeList {
@@ -45,8 +58,10 @@ func isValidTheme(name string) bool {
 
 func templateFuncs() template.FuncMap {
 	return template.FuncMap{
-		"add":         func(a, b int) int { return a + b },
-		"printf":      fmt.Sprintf,
+		"add":    func(a, b int) int { return a + b },
+		"printf": fmt.Sprintf,
+		// warn marks an import-log line for the warning tint.
+		"warn":        isWarnLine,
 		"fmtDuration": fmtDuration,
 		"fmtSecs":     func(sec int) string { return fmtDuration(float64(sec)) },
 		// runtimeSec totals a flow's known length (songs + breaks) for the rundown

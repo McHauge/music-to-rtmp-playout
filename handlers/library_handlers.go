@@ -76,15 +76,15 @@ func (app *App) EditTrack(w http.ResponseWriter, r *http.Request) {
 // list. Triggered by a Datastar @get with the playlist/video URL as ?url=.
 func (app *App) ImportYouTube(w http.ResponseWriter, r *http.Request) {
 	sse := datastar.NewSSE(w, r)
-	url := r.URL.Query().Get("url")
-	if strings.TrimSpace(url) == "" {
-		sse.PatchElements(`<div id="import-log" class="import-log">Enter a YouTube URL first.</div>`)
-		return
-	}
-
 	// The progress callback runs synchronously on this goroutine (importVia's
 	// scanner loop), so the shared rolling logger needs no locking.
-	logf := rollingLogger(sse, "import-log")
+	logf := app.rollingLogger(sse, "import-log")
+
+	url := r.URL.Query().Get("url")
+	if strings.TrimSpace(url) == "" {
+		logf("Paste a YouTube URL first.")
+		return
+	}
 	logf("Starting yt-dlp…")
 
 	tracks, err := app.Library.ImportYouTube(r.Context(), url, func(line string) {

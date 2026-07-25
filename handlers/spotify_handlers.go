@@ -57,7 +57,7 @@ func (app *App) ImportSpotify(w http.ResponseWriter, r *http.Request) {
 	parseErr := r.ParseForm()
 
 	sse := datastar.NewSSE(w, r)
-	logf := rollingLogger(sse, "spotify-log")
+	logf := app.rollingLogger(sse, "spotify-log")
 
 	if parseErr != nil {
 		logf("Import failed: %v", parseErr)
