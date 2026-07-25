@@ -20,6 +20,7 @@ go build -o playout . && \
 
 go build ./...     # compile-check everything
 go vet ./...       # static checks
+go test ./...      # unit tests (mixer, ring buffer, player state machine, encoder backoff)
 gofmt -w .         # format
 
 # Dev container (app + MediaMTX relay, `dev` image target): web 8080, RTMP 1935, HLS 8888
@@ -28,7 +29,7 @@ docker compose up --build
 docker build -t playout .
 ```
 
-There is no test suite in this repo. A live stream also needs an RTMP target — either the bundled MediaMTX (Docker) or any RTMP server pointed at by `RTMP_URL`.
+Test coverage is light — pure/logic-level unit tests live in `services/playout/*_test.go` (the mixer, ring buffer, player flow state machine, and encoder reconnect backoff); there is no end-to-end/integration suite. A live stream also needs an RTMP target — either the bundled MediaMTX (Docker) or any RTMP server pointed at by `RTMP_URL`.
 
 ## Architecture
 
@@ -42,7 +43,7 @@ The UI is server-rendered Go `html/template` patched live over SSE; there is no 
 One `Engine` owns a single live show. **All playback state lives in one `run` goroutine** (`engine.go`); control (skip/play/stop) flows in over a buffered `cmd` channel, status flows out via a snapshot + subscriber fan-out (`Subscribe`/`broadcast`). This single-owner design is why `player` needs no locks.
 
 The audio pipeline is fixed-format **48 kHz / stereo / s16le** PCM end to end (constants in `mix.go`; soundboard PCM cache must match):
-- `encoder.go` — one **persistent** ffmpeg for the whole show. Reads PCM on stdin, muxes with a looping background image + a `drawtext` now-playing overlay (updated via atomic temp-file rename in `SetNowPlaying`), pushes FLV to RTMP. **Audio is the master clock** (`-af aresample=async=1`, CFR video, `-shortest`) to bound A/V drift. Closing stdin (audio EOF) ends the stream cleanly.
+- `encoder.go` (+ `encoder_filter.go` filtergraph/arg building, `encoder_nvenc.go` codec detection) — one **persistent** ffmpeg for the whole show. Reads PCM on stdin, muxes with a looping background image + a `drawtext` now-playing overlay (text/art updated in place via `overwriteInPlace`; the banner fade alpha is driven at runtime over ZMQ, not a per-frame mask file), pushes FLV to RTMP. **Audio is the master clock** (`-af aresample=async=1`, CFR video, `-shortest`) to bound A/V drift. Closing stdin (audio EOF) ends the stream cleanly. If ffmpeg dies mid-show (e.g. the RTMP relay drops), `engine.run` **auto-restarts the encoder** with backoff rather than ending the show (`reconnectEncoder`); the pacing loop emits silence across the gap.
 - `engine.run` paces real time: every 5ms tick it produces audio up to `elapsed + lead`, so the encoder **never starves** — gaps (breaks/holds) emit silence rather than stopping the ffmpeg process, keeping the RTMP connection alive across the whole show.
 - `player.go` — position within the flow. Songs spawn a `decoder`; breaks count down silence; gates set `holding`. `AutoNext` decides auto-advance vs. park-and-wait. Owned solely by `run`.
 - `decoder.go` + `ringbuffer.go` — a short-lived ffmpeg normalizes one song to canonical PCM into a back-pressured ring buffer, decoupling decode jitter from the mix tick.
