@@ -13,7 +13,8 @@ import (
 // list: a pasted track list wins over a playlist URL (the URL path needs API
 // credentials, the paste path never does). Errors are reported through logf;
 // an empty return means there is nothing to import (already logged).
-func (app *App) resolveSpotifyTracks(spotURL, paste string, logf func(format string, args ...any)) []services.SpotifyTrack {
+func (app *App) resolveSpotifyTracks(r *http.Request, logf logFunc) []services.SpotifyTrack {
+	spotURL, paste := r.FormValue("spotify_url"), r.FormValue("spotify_paste")
 	if strings.TrimSpace(paste) != "" {
 		tracks := services.ParseTrackLines(paste)
 		if len(tracks) == 0 {
@@ -34,7 +35,7 @@ func (app *App) resolveSpotifyTracks(spotURL, paste string, logf func(format str
 		logf("Spotify API credentials are not set (SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET) — paste the track list instead.")
 		return nil
 	}
-	tracks, err := app.Spotify.PlaylistTracks(id)
+	tracks, err := app.Spotify.PlaylistTracks(r.Context(), id)
 	if err != nil {
 		logf("%v", err)
 		return nil
@@ -63,7 +64,7 @@ func (app *App) ImportSpotify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pairs := app.resolveSpotifyTracks(r.FormValue("spotify_url"), r.FormValue("spotify_paste"), logf)
+	pairs := app.resolveSpotifyTracks(r, logf)
 	if len(pairs) == 0 {
 		return
 	}
@@ -101,7 +102,7 @@ func (app *App) ImportSpotifyToFlow(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	pairs := app.resolveSpotifyTracks(r.FormValue("spotify_url"), r.FormValue("spotify_paste"), logf)
+	pairs := app.resolveSpotifyTracks(r, logf)
 	if len(pairs) == 0 {
 		return
 	}

@@ -142,7 +142,7 @@ func main() {
 	r.HandleFunc("/login", app.LoginPage).Methods("GET")
 	r.HandleFunc("/login", app.Login).Methods("POST")
 	r.HandleFunc("/setup", app.Setup).Methods("POST")
-	r.HandleFunc("/logout", app.Logout).Methods("POST", "GET")
+	r.HandleFunc("/logout", app.Logout).Methods("POST")
 
 	// Pages (auth-gated, redirect to login).
 	r.HandleFunc("/", app.RequirePage(app.StreamPage)).Methods("GET")
@@ -177,20 +177,20 @@ func main() {
 	// Soundboard API.
 	r.HandleFunc("/api/soundboard/upload", app.RequireAuth(app.UploadClip)).Methods("POST")
 	r.HandleFunc("/api/soundboard/delete", app.RequireAuth(app.DeleteClip)).Methods("POST")
-	r.HandleFunc("/api/soundboard/trigger", app.RequireAuth(app.TriggerClip)).Methods("POST", "GET")
+	r.HandleFunc("/api/soundboard/trigger", app.RequireAuth(app.TriggerClip)).Methods("POST")
 	r.HandleFunc("/api/soundboard/preview", app.RequireAuth(app.PreviewClip)).Methods("GET")
 
 	// Stream control API.
-	r.HandleFunc("/api/stream/start", app.RequireAuth(app.StartStream)).Methods("POST", "GET")
-	r.HandleFunc("/api/stream/stop", app.RequireAuth(app.StopStream)).Methods("POST", "GET")
-	r.HandleFunc("/api/stream/skip", app.RequireAuth(app.SkipItem)).Methods("POST", "GET")
-	r.HandleFunc("/api/stream/play", app.RequireAuth(app.PlayResume)).Methods("POST", "GET")
-	r.HandleFunc("/api/stream/pause", app.RequireAuth(app.PauseStream)).Methods("POST", "GET")
-	r.HandleFunc("/api/stream/prev", app.RequireAuth(app.PrevItem)).Methods("POST", "GET")
-	r.HandleFunc("/api/stream/restart", app.RequireAuth(app.RestartItem)).Methods("POST", "GET")
-	r.HandleFunc("/api/stream/jump", app.RequireAuth(app.JumpToItem)).Methods("POST", "GET")
-	r.HandleFunc("/api/stream/pause-after", app.RequireAuth(app.TogglePauseAfter)).Methods("POST", "GET")
-	r.HandleFunc("/api/stream/autonext", app.RequireAuth(app.StreamSetAutoNext)).Methods("POST", "GET")
+	r.HandleFunc("/api/stream/start", app.RequireAuth(app.StartStream)).Methods("POST")
+	r.HandleFunc("/api/stream/stop", app.RequireAuth(app.StopStream)).Methods("POST")
+	r.HandleFunc("/api/stream/skip", app.RequireAuth(app.SkipItem)).Methods("POST")
+	r.HandleFunc("/api/stream/play", app.RequireAuth(app.PlayResume)).Methods("POST")
+	r.HandleFunc("/api/stream/pause", app.RequireAuth(app.PauseStream)).Methods("POST")
+	r.HandleFunc("/api/stream/prev", app.RequireAuth(app.PrevItem)).Methods("POST")
+	r.HandleFunc("/api/stream/restart", app.RequireAuth(app.RestartItem)).Methods("POST")
+	r.HandleFunc("/api/stream/jump", app.RequireAuth(app.JumpToItem)).Methods("POST")
+	r.HandleFunc("/api/stream/pause-after", app.RequireAuth(app.TogglePauseAfter)).Methods("POST")
+	r.HandleFunc("/api/stream/autonext", app.RequireAuth(app.StreamSetAutoNext)).Methods("POST")
 	r.HandleFunc("/api/stream/rundown", app.RequireAuth(app.StreamRundown)).Methods("GET")
 	r.HandleFunc("/api/stream/status", app.RequireAuth(app.StreamStatus)).Methods("GET")
 

@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -132,15 +133,16 @@ func ParseSpotifyPlaylistID(input string) (string, error) {
 }
 
 // accessToken returns a cached app token, fetching a fresh one via the
-// client-credentials flow when missing or near expiry.
-func (s *SpotifyService) accessToken() (string, error) {
+// client-credentials flow when missing or near expiry. ctx bounds the fetch so
+// a client disconnect does not leave it pinned.
+func (s *SpotifyService) accessToken(ctx context.Context) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.token != "" && time.Now().Before(s.tokenExp) {
 		return s.token, nil
 	}
 
-	req, err := http.NewRequest("POST", "https://accounts.spotify.com/api/token",
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://accounts.spotify.com/api/token",
 		strings.NewReader("grant_type=client_credentials"))
 	if err != nil {
 		return "", err
@@ -179,15 +181,16 @@ func (s *SpotifyService) invalidateToken() {
 }
 
 // PlaylistTracks pages through the playlist's tracks and returns all
-// (artist, title, duration) tuples in playlist order.
-func (s *SpotifyService) PlaylistTracks(playlistID string) ([]SpotifyTrack, error) {
+// (artist, title, duration) tuples in playlist order. ctx cancels the whole
+// walk — up to 30 requests, each of which may back off on a 429.
+func (s *SpotifyService) PlaylistTracks(ctx context.Context, playlistID string) ([]SpotifyTrack, error) {
 	next := "https://api.spotify.com/v1/playlists/" + url.PathEscape(playlistID) +
 		"/tracks?limit=100&additional_types=track&fields=" +
 		url.QueryEscape("items(track(name,artists(name),duration_ms,is_local)),next")
 
 	var out []SpotifyTrack
 	for page := 0; next != "" && page < 30; page++ {
-		body, err := s.apiGET(next)
+		body, err := s.apiGET(ctx, next)
 		if err != nil {
 			return nil, err
 		}
@@ -227,15 +230,17 @@ func (s *SpotifyService) PlaylistTracks(playlistID string) ([]SpotifyTrack, erro
 }
 
 // apiGET performs an authenticated GET, retrying once on an expired token
-// (401) and once on rate limiting (429, honoring Retry-After up to 10s).
-func (s *SpotifyService) apiGET(apiURL string) ([]byte, error) {
+// (401) and once on rate limiting (429, honoring Retry-After up to 10s). The
+// rate-limit wait is cancellable — a 10s uninterruptible sleep per request,
+// across up to 30 pages, would outlive the client by minutes.
+func (s *SpotifyService) apiGET(ctx context.Context, apiURL string) ([]byte, error) {
 	retried401, retried429 := false, false
 	for {
-		token, err := s.accessToken()
+		token, err := s.accessToken(ctx)
 		if err != nil {
 			return nil, err
 		}
-		req, err := http.NewRequest("GET", apiURL, nil)
+		req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -261,7 +266,11 @@ func (s *SpotifyService) apiGET(apiURL string) ([]byte, error) {
 			if secs, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && secs > 0 {
 				wait = time.Duration(min(secs, 10)) * time.Second
 			}
-			time.Sleep(wait)
+			select {
+			case <-time.After(wait):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
 		default:
 			return nil, fmt.Errorf("spotify API error (%d): %s",
 				resp.StatusCode, strings.TrimSpace(string(body)))
