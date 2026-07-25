@@ -38,6 +38,10 @@ const (
 	ItemGate  = "gate"
 )
 
+// DefaultBreakSec is the break length used when a form supplies none (or a
+// non-positive one). Matches the playlists.default_break_sec schema default.
+const DefaultBreakSec = 20
+
 // FlowItem is one step in a show's playout flow.
 type FlowItem struct {
 	ID         int64

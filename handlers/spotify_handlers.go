@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"net/http"
-	"strconv"
 	"strings"
 
 	"music-to-rtmp-playout/services"
@@ -94,50 +93,19 @@ func (app *App) ImportSpotify(w http.ResponseWriter, r *http.Request) {
 // break/auto-next options as the other bulk-add modes. Progress streams to
 // #bulk-log over SSE.
 func (app *App) ImportSpotifyToFlow(w http.ResponseWriter, r *http.Request) {
-	// Same ordering constraint as BulkUploadToFlow: the multipart form (shared
-	// with the file-upload button) must be parsed before NewSSE flushes headers.
-	r.Body = http.MaxBytesReader(w, r.Body, app.Cfg.MaxUploadSize)
-	parseErr := r.ParseMultipartForm(32 << 20)
-
-	sse := datastar.NewSSE(w, r)
-	logf := bulkLogger(sse)
-
-	if parseErr != nil {
-		logf("Import failed: %v", parseErr)
+	sse, logf, ok := app.beginBulkSSE(w, r, "Import failed: %v")
+	if !ok {
 		return
 	}
-
-	plID, _ := strconv.ParseInt(r.FormValue("playlist_id"), 10, 64)
-	pl, err := app.Flow.GetPlaylist(plID)
-	if err != nil || pl == nil {
-		logf("Unknown show.")
+	plID, ok := app.bulkPlaylistID(r, logf)
+	if !ok {
 		return
 	}
-
 	pairs := app.resolveSpotifyTracks(r.FormValue("spotify_url"), r.FormValue("spotify_paste"), logf)
 	if len(pairs) == 0 {
 		return
 	}
-
-	breakSec, _ := strconv.Atoi(r.FormValue("break_sec"))
-	if breakSec < 0 {
-		breakSec = 0
-	}
-	_ = app.Flow.SetDefaultBreakSec(plID, breakSec)
-
-	withBreaks := breakSec > 0
-	// Manual start: playback parks before each new song. With breaks the hold
-	// sits on the break (song flows into its break, then waits); without
-	// breaks it sits on the song itself.
-	manual := r.FormValue("start_mode") == "manual"
-	songAuto := !(manual && !withBreaks)
-
-	// Breaks go between consecutive songs — including between the current last
-	// item (if it is a song) and the first new one — but never at the end.
-	needBreak := false
-	if items, err := app.Flow.GetItems(plID); err == nil && len(items) > 0 {
-		needBreak = items[len(items)-1].Type == services.ItemSong
-	}
+	appender := app.newFlowAppender(r, plID)
 
 	added := 0
 	for i, p := range pairs {
@@ -146,16 +114,15 @@ func (app *App) ImportSpotifyToFlow(w http.ResponseWriter, r *http.Request) {
 		// with auto-breaks on, our own breaks already provide the spacing;
 		// otherwise the filler becomes a break of its own duration.
 		if sec, ok := p.SilenceSec(); ok {
-			if withBreaks {
-				logf("  silence track — skipped (using your %ds breaks instead)", breakSec)
+			if appender.withBreaks() {
+				logf("  silence track — skipped (using your %ds breaks instead)", appender.breakSec)
 				continue
 			}
 			if sec <= 0 {
-				sec = 20
+				sec = services.DefaultBreakSec
 			}
-			_, _ = app.Flow.AddItem(plID, services.ItemBreak, nil, sec, "", !manual)
+			appender.addBreak(sec)
 			logf("  silence track — added as a %ds break (no download)", sec)
-			needBreak = false
 			continue
 		}
 		track, err := app.Library.ImportSearch(r.Context(), p, "spotify", func(line string) { logf("%s", line) })
@@ -166,12 +133,7 @@ func (app *App) ImportSpotifyToFlow(w http.ResponseWriter, r *http.Request) {
 		if track.DurationSec <= 0 {
 			logf("  warning: no duration for %q", track.Title)
 		}
-		if needBreak && withBreaks {
-			_, _ = app.Flow.AddItem(plID, services.ItemBreak, nil, breakSec, "", !manual)
-		}
-		tid := track.ID
-		_, _ = app.Flow.AddItem(plID, services.ItemSong, &tid, 0, "", songAuto)
-		needBreak = true
+		appender.appendSong(track.ID)
 		added++
 	}
 

@@ -12,10 +12,103 @@ import (
 	"github.com/starfederation/datastar-go/datastar"
 )
 
-// bulkLogger returns a printf-style logger that re-patches #bulk-log with a
-// rolling 40-line buffer on every call.
-func bulkLogger(sse *datastar.ServerSentEventGenerator) func(format string, args ...any) {
-	return rollingLogger(sse, "bulk-log")
+// logFunc is the printf-style progress sink a bulk handler streams to.
+type logFunc = func(format string, args ...any)
+
+// bulkFormMemory is the in-memory cap for a parsed multipart form; anything
+// larger spills to temp files. The overall body size is capped separately by
+// MaxUploadSize.
+const bulkFormMemory = 32 << 20
+
+// beginBulkSSE starts the SSE response for a bulk-add handler and returns its
+// rolling #bulk-log logger. The multipart body must be fully parsed *before*
+// NewSSE flushes response headers — after that the request body may no longer
+// be readable on HTTP/1.1 — so the parse happens here and its error is reported
+// over the stream. parseFailMsg takes the error as its single %v verb. A false
+// third return means the caller should stop.
+func (app *App) beginBulkSSE(w http.ResponseWriter, r *http.Request, parseFailMsg string) (*datastar.ServerSentEventGenerator, logFunc, bool) {
+	r.Body = http.MaxBytesReader(w, r.Body, app.Cfg.MaxUploadSize)
+	parseErr := r.ParseMultipartForm(bulkFormMemory)
+
+	sse := datastar.NewSSE(w, r)
+	logf := rollingLogger(sse, "bulk-log")
+	if parseErr != nil {
+		logf(parseFailMsg, parseErr)
+		return sse, logf, false
+	}
+	return sse, logf, true
+}
+
+// bulkPlaylistID resolves the playlist_id form field and confirms the show
+// exists, reporting over the stream when it does not.
+func (app *App) bulkPlaylistID(r *http.Request, logf logFunc) (int64, bool) {
+	plID, _ := strconv.ParseInt(r.FormValue("playlist_id"), 10, 64)
+	pl, err := app.Flow.GetPlaylist(plID)
+	if err != nil || pl == nil {
+		logf("Unknown show.")
+		return 0, false
+	}
+	return plID, true
+}
+
+// flowAppender appends songs to a show's rundown under the break/auto-next
+// options every bulk-add mode shares (upload, YouTube, Spotify).
+//
+// Breaks go *between* consecutive songs — including between the show's current
+// last item, if it is a song, and the first appended one — but never at the end.
+type flowAppender struct {
+	flow     *services.FlowService
+	plID     int64
+	breakSec int
+	// manual start: playback parks before each new song. With breaks the hold
+	// sits on the break (song flows into its break, then waits); without breaks
+	// it sits on the song itself.
+	manual    bool
+	songAuto  bool
+	needBreak bool // a break is owed before the next song
+}
+
+// newFlowAppender reads the break_sec/start_mode form fields shared by the bulk
+// forms, persists break_sec as the show's default, and seeds the break lookback
+// from the rundown's current tail.
+func (app *App) newFlowAppender(r *http.Request, plID int64) *flowAppender {
+	breakSec, _ := strconv.Atoi(r.FormValue("break_sec"))
+	if breakSec < 0 {
+		breakSec = 0
+	}
+	_ = app.Flow.SetDefaultBreakSec(plID, breakSec)
+
+	manual := r.FormValue("start_mode") == "manual"
+	a := &flowAppender{
+		flow:     app.Flow,
+		plID:     plID,
+		breakSec: breakSec,
+		manual:   manual,
+		songAuto: !(manual && breakSec == 0),
+	}
+	if items, err := app.Flow.GetItems(plID); err == nil && len(items) > 0 {
+		a.needBreak = items[len(items)-1].Type == services.ItemSong
+	}
+	return a
+}
+
+// withBreaks reports whether auto-breaks are in play for this batch.
+func (a *flowAppender) withBreaks() bool { return a.breakSec > 0 }
+
+// appendSong adds trackID to the rundown, preceded by a break when one is owed.
+func (a *flowAppender) appendSong(trackID int64) {
+	if a.needBreak && a.withBreaks() {
+		a.addBreak(a.breakSec)
+	}
+	_, _ = a.flow.AddItem(a.plID, services.ItemSong, &trackID, 0, "", a.songAuto)
+	a.needBreak = true
+}
+
+// addBreak appends an explicit break of sec seconds and clears the owed-break
+// flag, so a following song does not stack a second break on top of it.
+func (a *flowAppender) addBreak(sec int) {
+	_, _ = a.flow.AddItem(a.plID, services.ItemBreak, nil, sec, "", !a.manual)
+	a.needBreak = false
 }
 
 // rollingLogger returns a printf-style logger that re-patches the given div
@@ -61,24 +154,12 @@ func isWarnLine(l string) bool {
 // rundown as a song, with the show's break spacing between songs. Per-file
 // progress streams to #bulk-log over SSE, then the rundown is re-patched.
 func (app *App) BulkUploadToFlow(w http.ResponseWriter, r *http.Request) {
-	// The multipart body must be fully parsed before the SSE response starts:
-	// NewSSE flushes response headers, after which the request body may no
-	// longer be readable on HTTP/1.1.
-	r.Body = http.MaxBytesReader(w, r.Body, app.Cfg.MaxUploadSize)
-	parseErr := r.ParseMultipartForm(32 << 20)
-
-	sse := datastar.NewSSE(w, r)
-	logf := bulkLogger(sse)
-
-	if parseErr != nil {
-		logf("Upload failed: %v — raise MAX_UPLOAD_MB if the batch is large.", parseErr)
+	sse, logf, ok := app.beginBulkSSE(w, r, "Upload failed: %v — raise MAX_UPLOAD_MB if the batch is large.")
+	if !ok {
 		return
 	}
-
-	plID, _ := strconv.ParseInt(r.FormValue("playlist_id"), 10, 64)
-	pl, err := app.Flow.GetPlaylist(plID)
-	if err != nil || pl == nil {
-		logf("Unknown show.")
+	plID, ok := app.bulkPlaylistID(r, logf)
+	if !ok {
 		return
 	}
 	files := r.MultipartForm.File["files"]
@@ -86,26 +167,7 @@ func (app *App) BulkUploadToFlow(w http.ResponseWriter, r *http.Request) {
 		logf("Choose one or more audio files first.")
 		return
 	}
-
-	breakSec, _ := strconv.Atoi(r.FormValue("break_sec"))
-	if breakSec < 0 {
-		breakSec = 0
-	}
-	_ = app.Flow.SetDefaultBreakSec(plID, breakSec)
-
-	withBreaks := breakSec > 0
-	// Manual start: playback parks before each new song. With breaks the hold
-	// sits on the break (song flows into its break, then waits); without
-	// breaks it sits on the song itself.
-	manual := r.FormValue("start_mode") == "manual"
-	songAuto := !(manual && !withBreaks)
-
-	// Breaks go between consecutive songs — including between the current last
-	// item (if it is a song) and the first new one — but never at the end.
-	needBreak := false
-	if items, err := app.Flow.GetItems(plID); err == nil && len(items) > 0 {
-		needBreak = items[len(items)-1].Type == services.ItemSong
-	}
+	appender := app.newFlowAppender(r, plID)
 
 	added := 0
 	for i, hdr := range files {
@@ -124,11 +186,7 @@ func (app *App) BulkUploadToFlow(w http.ResponseWriter, r *http.Request) {
 		if track.DurationSec <= 0 {
 			logf("  warning: could not read duration — is this an audio file?")
 		}
-		if needBreak && withBreaks {
-			_, _ = app.Flow.AddItem(plID, services.ItemBreak, nil, breakSec, "", !manual)
-		}
-		_, _ = app.Flow.AddItem(plID, services.ItemSong, &track.ID, 0, "", songAuto)
-		needBreak = true
+		appender.appendSong(track.ID)
 		added++
 	}
 
@@ -141,23 +199,12 @@ func (app *App) BulkUploadToFlow(w http.ResponseWriter, r *http.Request) {
 // the same break/auto-next options as bulk upload. Progress streams to
 // #bulk-log over SSE.
 func (app *App) ImportYouTubeToFlow(w http.ResponseWriter, r *http.Request) {
-	// Same ordering constraint as BulkUploadToFlow: the multipart form (shared
-	// with the file-upload button) must be parsed before NewSSE flushes headers.
-	r.Body = http.MaxBytesReader(w, r.Body, app.Cfg.MaxUploadSize)
-	parseErr := r.ParseMultipartForm(32 << 20)
-
-	sse := datastar.NewSSE(w, r)
-	logf := bulkLogger(sse)
-
-	if parseErr != nil {
-		logf("Import failed: %v", parseErr)
+	sse, logf, ok := app.beginBulkSSE(w, r, "Import failed: %v")
+	if !ok {
 		return
 	}
-
-	plID, _ := strconv.ParseInt(r.FormValue("playlist_id"), 10, 64)
-	pl, err := app.Flow.GetPlaylist(plID)
-	if err != nil || pl == nil {
-		logf("Unknown show.")
+	plID, ok := app.bulkPlaylistID(r, logf)
+	if !ok {
 		return
 	}
 	url := strings.TrimSpace(r.FormValue("youtube_url"))
@@ -165,26 +212,7 @@ func (app *App) ImportYouTubeToFlow(w http.ResponseWriter, r *http.Request) {
 		logf("Paste a YouTube URL first.")
 		return
 	}
-
-	breakSec, _ := strconv.Atoi(r.FormValue("break_sec"))
-	if breakSec < 0 {
-		breakSec = 0
-	}
-	_ = app.Flow.SetDefaultBreakSec(plID, breakSec)
-
-	withBreaks := breakSec > 0
-	// Manual start: playback parks before each new song. With breaks the hold
-	// sits on the break (song flows into its break, then waits); without
-	// breaks it sits on the song itself.
-	manual := r.FormValue("start_mode") == "manual"
-	songAuto := !(manual && !withBreaks)
-
-	// Breaks go between consecutive songs — including between the current last
-	// item (if it is a song) and the first new one — but never at the end.
-	needBreak := false
-	if items, err := app.Flow.GetItems(plID); err == nil && len(items) > 0 {
-		needBreak = items[len(items)-1].Type == services.ItemSong
-	}
+	appender := app.newFlowAppender(r, plID)
 
 	logf("Starting yt-dlp…")
 	tracks, err := app.Library.ImportYouTube(r.Context(), url, func(line string) { logf("%s", line) })
@@ -201,12 +229,7 @@ func (app *App) ImportYouTubeToFlow(w http.ResponseWriter, r *http.Request) {
 		if t.DurationSec <= 0 {
 			logf("warning: no duration for %q", t.Title)
 		}
-		if needBreak && withBreaks {
-			_, _ = app.Flow.AddItem(plID, services.ItemBreak, nil, breakSec, "", !manual)
-		}
-		tid := t.ID
-		_, _ = app.Flow.AddItem(plID, services.ItemSong, &tid, 0, "", songAuto)
-		needBreak = true
+		appender.appendSong(t.ID)
 	}
 
 	logf("Done — added %d track(s) to the rundown.", len(tracks))

@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"music-to-rtmp-playout/services"
 )
 
 // CreatePlaylist makes a new show and opens its builder.
@@ -52,7 +54,7 @@ func (app *App) AddItem(w http.ResponseWriter, r *http.Request) {
 	case "break":
 		breakSec, _ = strconv.Atoi(r.FormValue("break_sec"))
 		if breakSec <= 0 {
-			breakSec = 20
+			breakSec = services.DefaultBreakSec
 		}
 	}
 	autoNext := r.FormValue("auto_next") != "off"
@@ -136,7 +138,7 @@ func (app *App) SetBreakSec(w http.ResponseWriter, r *http.Request) {
 	itemID, _ := strconv.ParseInt(r.FormValue("id"), 10, 64)
 	sec, _ := strconv.Atoi(r.FormValue("break_sec"))
 	if sec <= 0 {
-		sec = 20
+		sec = services.DefaultBreakSec
 	}
 	if err := app.Flow.SetBreakSec(itemID, sec); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
