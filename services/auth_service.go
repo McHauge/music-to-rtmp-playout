@@ -9,10 +9,10 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// Sha256Hex matches the client-side hashing the browser applies before sending
+// sha256Hex matches the client-side hashing the browser applies before sending
 // a password, so server-initiated account creation (admin bootstrap) stores a
 // comparable hash.
-func Sha256Hex(s string) string {
+func sha256Hex(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
 }
@@ -61,7 +61,7 @@ func (s *AuthService) EnsureAdmin(username, password string) error {
 	if err != nil || has {
 		return err
 	}
-	return s.CreateUser(username, Sha256Hex(password))
+	return s.CreateUser(username, sha256Hex(password))
 }
 
 // Authenticate verifies a username + client hash. Returns the user id on success.

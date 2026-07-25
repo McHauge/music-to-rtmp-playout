@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"html/template"
 	"path/filepath"
-	"time"
 
 	"music-to-rtmp-playout/services"
 )
@@ -19,25 +18,24 @@ type Templates struct {
 type ThemeEntry struct {
 	Name  string
 	Label string
-	Color string
 }
 
-// ThemeList is the canonical ordered list of available themes (mirrors the
-// reference project's palette).
-var ThemeList = []ThemeEntry{
-	{"teal", "Teal", "#06b6d4"},
-	{"gold", "Gold", "#f59e0b"},
-	{"emerald", "Emerald", "#10b981"},
-	{"rose", "Rose", "#f43f5e"},
-	{"violet", "Violet", "#8b5cf6"},
-	{"sapphire", "Sapphire", "#3b82f6"},
-	{"crimson", "Crimson", "#dc2626"},
-	{"slate", "Slate", "#64748b"},
+// themeList is the canonical ordered list of available themes (mirrors the
+// reference project's palette). The settings page receives it as page data.
+var themeList = []ThemeEntry{
+	{"teal", "Teal"},
+	{"gold", "Gold"},
+	{"emerald", "Emerald"},
+	{"rose", "Rose"},
+	{"violet", "Violet"},
+	{"sapphire", "Sapphire"},
+	{"crimson", "Crimson"},
+	{"slate", "Slate"},
 }
 
-// IsValidTheme reports whether name is a known theme.
-func IsValidTheme(name string) bool {
-	for _, t := range ThemeList {
+// isValidTheme reports whether name is a known theme.
+func isValidTheme(name string) bool {
+	for _, t := range themeList {
 		if t.Name == name {
 			return true
 		}
@@ -47,10 +45,7 @@ func IsValidTheme(name string) bool {
 
 func templateFuncs() template.FuncMap {
 	return template.FuncMap{
-		"themeList":   func() []ThemeEntry { return ThemeList },
-		"currentYear": func() int { return time.Now().Year() },
 		"add":         func(a, b int) int { return a + b },
-		"sub":         func(a, b int) int { return a - b },
 		"printf":      fmt.Sprintf,
 		"fmtDuration": fmtDuration,
 		"fmtSecs":     func(sec int) string { return fmtDuration(float64(sec)) },

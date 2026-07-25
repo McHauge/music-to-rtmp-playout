@@ -123,7 +123,7 @@ func main() {
 		log.Fatalf("load templates: %v", err)
 	}
 
-	app := handlers.NewApp(db, store, cfg, tmpl, authSvc, librarySvc, flowSvc, soundboardSvc, settingsSvc, spotifySvc, engine)
+	app := handlers.NewApp(store, cfg, tmpl, authSvc, librarySvc, flowSvc, soundboardSvc, settingsSvc, spotifySvc, engine)
 
 	// MIME fixes for Windows dev.
 	mime.AddExtensionType(".css", "text/css")

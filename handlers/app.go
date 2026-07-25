@@ -1,8 +1,6 @@
 package handlers
 
 import (
-	"database/sql"
-
 	"music-to-rtmp-playout/config"
 	"music-to-rtmp-playout/services"
 	"music-to-rtmp-playout/services/playout"
@@ -10,9 +8,9 @@ import (
 	"github.com/gorilla/sessions"
 )
 
-// App is the dependency-injection container shared by all handlers.
+// App is the dependency-injection container shared by all handlers. There is no
+// *sql.DB here on purpose: every handler reaches the database through a service.
 type App struct {
-	Db    *sql.DB
 	Store *sessions.CookieStore
 	Cfg   *config.Config
 	Tmpl  *Templates
@@ -27,13 +25,13 @@ type App struct {
 }
 
 // NewApp wires the container.
-func NewApp(db *sql.DB, store *sessions.CookieStore, cfg *config.Config,
+func NewApp(store *sessions.CookieStore, cfg *config.Config,
 	tmpl *Templates,
 	auth *services.AuthService, lib *services.LibraryService, flow *services.FlowService,
 	sb *services.SoundboardService, settings *services.SettingsService,
 	spotify *services.SpotifyService, engine *playout.Engine) *App {
 	return &App{
-		Db: db, Store: store, Cfg: cfg, Tmpl: tmpl,
+		Store: store, Cfg: cfg, Tmpl: tmpl,
 		Auth: auth, Library: lib, Flow: flow, Soundboard: sb, Settings: settings,
 		Spotify: spotify, Engine: engine,
 	}

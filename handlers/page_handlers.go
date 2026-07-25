@@ -139,7 +139,7 @@ func (app *App) SettingsPage(w http.ResponseWriter, r *http.Request) {
 	st, _ := app.Settings.Get()
 	app.render(w, "page-settings", PageData{
 		Title: "Settings", Page: "settings", Theme: app.currentTheme(),
-		Extra: map[string]any{"Settings": st, "Themes": ThemeList},
+		Extra: map[string]any{"Settings": st, "Themes": themeList},
 	})
 }
 
@@ -182,7 +182,7 @@ func (app *App) SaveSettings(w http.ResponseWriter, r *http.Request) {
 		LowLatency:   r.FormValue("low_latency") != "",
 		Theme:        r.FormValue("theme"),
 	}
-	if !IsValidTheme(st.Theme) {
+	if !isValidTheme(st.Theme) {
 		st.Theme = "teal"
 	}
 	switch st.VizStyle {

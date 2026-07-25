@@ -17,17 +17,12 @@ func writeJSON(w http.ResponseWriter, v any) {
 }
 
 // DebugStats returns the current live status plus the run-loop health snapshot.
+// Status carries its own json tags, so it marshals directly rather than through
+// a hand-picked map that has to be kept in step with the struct.
 func (app *App) DebugStats(w http.ResponseWriter, r *http.Request) {
-	st := app.Engine.Status()
 	writeJSON(w, map[string]any{
-		"running":        st.Running,
-		"paused":         st.Paused,
-		"itemIndex":      st.ItemIndex,
-		"nowPlaying":     st.NowPlaying,
-		"elapsedSec":     st.ElapsedSec,
-		"itemElapsedSec": st.ItemElapsedSec,
-		"error":          st.Error,
-		"diag":           app.Engine.Diag(),
+		"status": app.Engine.Status(),
+		"diag":   app.Engine.Diag(),
 	})
 }
 
