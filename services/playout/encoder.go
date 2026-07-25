@@ -176,10 +176,11 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 	vizMaskPath := ""
 	if audioInGraph {
 		// Static pill mask for the visualization, supersampled 4x and
-		// scaled down in the graph for smooth capsule edges.
+		// scaled down in the graph for smooth capsule edges. Regenerated only
+		// when the geometry actually changes — startEncoder re-runs on every
+		// reconnect attempt, and the PNG encode is pure repeated work otherwise.
 		vizMaskPath = filepath.Join(filepath.Dir(c.ArtLivePath), "viz_mask.png")
-		mask := pillMaskPNG(geom.pillsW*4, geom.vizH*4, (geom.pill+geom.pillGap)*4, geom.pill*4)
-		if err := os.WriteFile(vizMaskPath, mask, 0o644); err != nil {
+		if err := writeVizMask(vizMaskPath, geom); err != nil {
 			return nil, err
 		}
 	}

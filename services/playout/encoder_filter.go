@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -25,8 +26,19 @@ func colorInput(c encoderConfig) []string {
 // unchanged. Returns the scaled path and true on success; on any failure the
 // caller feeds the original image (unchanged behavior). Bounded so a pathological
 // source can't wedge stream startup.
+// The result is memoized: startEncoder runs on every reconnect attempt, and
+// against a down RTMP relay that would otherwise mean an ffmpeg spawn every few
+// hundred milliseconds to redo identical work.
 func prescaleBackground(ffmpegPath, src string, w, h int, destDir string) (string, bool) {
 	dest := filepath.Join(destDir, "bg_scaled.png")
+	key := prescaleKey{src: src, w: w, h: h, dest: dest}
+	if fi, err := os.Stat(src); err == nil {
+		key.srcSize, key.srcMod = fi.Size(), fi.ModTime()
+	}
+	if p, ok := prescaleCache.get(key, dest); ok {
+		return p, true
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, ffmpegPath,
@@ -38,7 +50,90 @@ func prescaleBackground(ffmpegPath, src string, w, h int, destDir string) (strin
 	if err := cmd.Run(); err != nil {
 		return "", false
 	}
+	prescaleCache.put(key)
 	return dest, true
+}
+
+// prescaleKey identifies a scaled background by its source (path + size +
+// mtime, so editing the image in place still invalidates) and target size.
+type prescaleKey struct {
+	src     string
+	srcSize int64
+	srcMod  time.Time
+	w, h    int
+	dest    string
+}
+
+// generatedAssetCache remembers the last generated artifact so an identical
+// request can skip the work. One entry is enough: a running show regenerates
+// the same asset over and over, it never alternates between two.
+type generatedAssetCache struct {
+	mu    sync.Mutex
+	valid bool
+	key   prescaleKey
+}
+
+var prescaleCache generatedAssetCache
+
+// get reports a hit only when the key matches *and* the output is still on
+// disk, so clearing the assets dir cannot leave a stale hit behind.
+func (c *generatedAssetCache) get(k prescaleKey, dest string) (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.valid || c.key != k {
+		return "", false
+	}
+	if _, err := os.Stat(dest); err != nil {
+		c.valid = false
+		return "", false
+	}
+	return dest, true
+}
+
+func (c *generatedAssetCache) put(k prescaleKey) {
+	c.mu.Lock()
+	c.key, c.valid = k, true
+	c.mu.Unlock()
+}
+
+// vizMaskKey identifies a rendered pill mask by everything pillMaskPNG consumes.
+type vizMaskKey struct {
+	path                    string
+	w, h, period, pillWidth int
+}
+
+var vizMaskCache struct {
+	mu    sync.Mutex
+	valid bool
+	key   vizMaskKey
+}
+
+// writeVizMask renders the visualization's pill mask to path, skipping both the
+// PNG encode and the write when the identical mask is already there. The 4x
+// supersample is scaled back down in the filtergraph for smooth capsule edges.
+func writeVizMask(path string, g bannerGeom) error {
+	const supersample = 4
+	k := vizMaskKey{
+		path:      path,
+		w:         g.pillsW * supersample,
+		h:         g.vizH * supersample,
+		period:    (g.pill + g.pillGap) * supersample,
+		pillWidth: g.pill * supersample,
+	}
+
+	vizMaskCache.mu.Lock()
+	defer vizMaskCache.mu.Unlock()
+	if vizMaskCache.valid && vizMaskCache.key == k {
+		if _, err := os.Stat(path); err == nil {
+			return nil
+		}
+	}
+	if err := os.WriteFile(path, pillMaskPNG(k.w, k.h, k.period, k.pillWidth), 0o644); err != nil {
+		vizMaskCache.valid = false
+		return err
+	}
+	vizMaskCache.key, vizMaskCache.valid = k, true
+	return nil
 }
 
 // bannerGeom is the lower-third layout: the bar's position in final output

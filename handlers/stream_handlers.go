@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/starfederation/datastar-go/datastar"
 
@@ -156,6 +157,13 @@ func statusRundownKey(s playout.Status) rundownKey {
 	}
 }
 
+// statusPatchInterval coalesces status patches. The engine broadcasts every 5ms
+// tick; re-rendering the panel and writing SSE at that rate burns CPU on the
+// same box that is encoding video, and no operator can read 200 updates a
+// second. A state change (play/pause/hold/item boundary) still patches
+// immediately — only the ticking clock is rate-limited.
+const statusPatchInterval = 100 * time.Millisecond
+
 // StreamStatus is a long-lived SSE connection that pushes status updates to the
 // operator console as the show progresses.
 func (app *App) StreamStatus(w http.ResponseWriter, r *http.Request) {
@@ -169,6 +177,7 @@ func (app *App) StreamStatus(w http.ResponseWriter, r *http.Request) {
 	app.patchStatus(sse)
 	last := statusRundownKey(app.Engine.Status())
 	app.patchRundown(sse, app.lastShowID(r))
+	lastPatch := time.Now()
 
 	for {
 		select {
@@ -178,8 +187,15 @@ func (app *App) StreamStatus(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			app.patchStatus(sse)
-			if key := statusRundownKey(s); key != last {
+			key := statusRundownKey(s)
+			changed := key != last
+			// Anything the operator can perceive as a state change goes out at
+			// once; between changes the clock updates at statusPatchInterval.
+			if changed || time.Since(lastPatch) >= statusPatchInterval {
+				app.patchStatus(sse)
+				lastPatch = time.Now()
+			}
+			if changed {
 				last = key
 				app.patchRundown(sse, 0)
 			}

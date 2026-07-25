@@ -42,6 +42,7 @@ type player struct {
 	itemBytes  int64        // program audio consumed by the current item (elapsed clock)
 	breakRem   int          // remaining silence bytes for a break item
 	played     map[int]bool // items the playhead has visited and left (for UI dimming)
+	playedSnap map[int]bool // cached publish copy of played; nil = stale, rebuild on next read
 	holding    bool         // paused at a gate or a non-auto-next end
 	paused     bool         // frozen mid-item; decoder kept alive via ring back-pressure
 	pauseAfter bool         // one-shot: pause when the current item completes
@@ -111,16 +112,23 @@ func (p *player) markPlayed(i int) {
 		p.played = map[int]bool{}
 	}
 	p.played[i] = true
+	p.playedSnap = nil // invalidate the published snapshot
 }
 
-// playedCopy returns an independent snapshot of the played set for publishing,
-// so status readers never touch the map the run goroutine keeps mutating.
+// playedCopy returns an immutable snapshot of the played set for publishing, so
+// status readers never touch the map the run goroutine keeps mutating. The set
+// only changes at item boundaries but is published every 5ms tick, so the copy
+// is cached until markPlayed invalidates it — the snapshot handed out is never
+// written to again.
 func (p *player) playedCopy() map[int]bool {
-	m := make(map[int]bool, len(p.played))
-	for k := range p.played {
-		m[k] = true
+	if p.playedSnap == nil {
+		m := make(map[int]bool, len(p.played))
+		for k := range p.played {
+			m[k] = true
+		}
+		p.playedSnap = m
 	}
-	return m
+	return p.playedSnap
 }
 
 // loadItem prepares the source for the item at idx. Songs spawn a decoder;
