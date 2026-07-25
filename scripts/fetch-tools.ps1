@@ -39,6 +39,25 @@ foreach ($exe in @('ffmpeg.exe', 'ffprobe.exe')) {
 Remove-Item $zip -Force
 Remove-Item -Recurse -Force $ext
 
+# MediaMTX relay (local dev only — lets you watch the stream on-box and, like the
+# Docker `dev` image, gives the encoder a reliable localhost RTMP sink that
+# absorbs upstream network blips). Pinned to the Docker image's MEDIAMTX_VERSION.
+# The production image ships no relay and pushes straight to an external ingest.
+$mediamtxVersion = 'v1.9.3'
+Write-Host "==> mediamtx $mediamtxVersion"
+$mmZip = Join-Path $env:TEMP 'mediamtx.zip'
+$mmExt = Join-Path $env:TEMP 'mediamtx-extract'
+Invoke-WebRequest -Uri "https://github.com/bluenviron/mediamtx/releases/download/$mediamtxVersion/mediamtx_${mediamtxVersion}_windows_amd64.zip" `
+    -OutFile $mmZip
+if (Test-Path $mmExt) { Remove-Item -Recurse -Force $mmExt }
+Expand-Archive -Path $mmZip -DestinationPath $mmExt -Force
+# Take only the binary; the repo ships its own mediamtx.yml.
+$mmSrc = Get-ChildItem -Path $mmExt -Recurse -Filter 'mediamtx.exe' | Select-Object -First 1
+if (-not $mmSrc) { throw 'Could not find mediamtx.exe in the downloaded archive' }
+Copy-Item $mmSrc.FullName (Join-Path $bin 'mediamtx.exe') -Force
+Remove-Item $mmZip -Force
+Remove-Item -Recurse -Force $mmExt
+
 Write-Host ''
 Write-Host "Done. Bundled tools in $bin :"
 Get-ChildItem $bin | Where-Object { $_.Name -ne '.gitkeep' } | ForEach-Object { Write-Host "  $($_.Name)" }

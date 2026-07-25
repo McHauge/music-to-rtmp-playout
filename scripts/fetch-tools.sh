@@ -65,6 +65,30 @@ case "$OS" in
     ;;
 esac
 
+# MediaMTX relay (local dev only — lets you watch the stream on-box and, like the
+# Docker `dev` image, gives the encoder a reliable localhost RTMP sink that
+# absorbs upstream network blips). Pinned to the Docker image's MEDIAMTX_VERSION.
+# The production image ships no relay and pushes straight to an external ingest.
+MEDIAMTX_VERSION="v1.9.3"
+case "$OS" in
+  Linux)  case "$ARCH" in x86_64|amd64) MM="linux_amd64" ;; aarch64|arm64) MM="linux_arm64v8" ;; *) MM="" ;; esac ;;
+  Darwin) case "$ARCH" in x86_64|amd64) MM="darwin_amd64" ;; arm64) MM="darwin_arm64" ;; *) MM="" ;; esac ;;
+  *) MM="" ;;
+esac
+if [ -n "$MM" ]; then
+  echo "==> mediamtx $MEDIAMTX_VERSION"
+  tmp="$(mktemp -d)"
+  curl -L --fail -o "$tmp/mediamtx.tar.gz" \
+    "https://github.com/bluenviron/mediamtx/releases/download/${MEDIAMTX_VERSION}/mediamtx_${MEDIAMTX_VERSION}_${MM}.tar.gz"
+  # Take only the binary; the repo ships its own mediamtx.yml.
+  tar -xzf "$tmp/mediamtx.tar.gz" -C "$tmp" mediamtx
+  cp "$tmp/mediamtx" "$BIN/mediamtx"
+  chmod +x "$BIN/mediamtx"
+  rm -rf "$tmp"
+else
+  echo "==> mediamtx: no prebuilt asset for $OS/$ARCH — skipping (install manually to watch locally)"
+fi
+
 echo ""
 echo "Done. Bundled tools in $BIN:"
 ls -1 "$BIN" | grep -v '^.gitkeep$' | sed 's/^/  /'
