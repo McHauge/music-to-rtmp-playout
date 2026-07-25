@@ -336,8 +336,12 @@ func (e *Engine) run(enc *encoder, encCfg encoderConfig, items []services.FlowIt
 	fadeWritten := 0
 	lastFadeTick := time.Now()
 
-	publish := func() {
-		s := Status{
+	// snapshot is the single place a live Status is built. Every live publisher
+	// (the pacing loop and the reconnect wait) goes through it: the status panel
+	// renders all of these fields, so a hand-rolled literal that omits some makes
+	// the show clock and progress bar reset on screen.
+	snapshot := func(errMsg string) Status {
+		return Status{
 			Running:         true,
 			Holding:         p.holding,
 			Paused:          p.paused,
@@ -354,7 +358,20 @@ func (e *Engine) run(enc *encoder, encCfg encoderConfig, items []services.FlowIt
 			ItemDurationSec: p.itemDurationSec(),
 			ActiveVoices:    vmix.active(),
 			Played:          p.playedCopy(),
+			Error:           errMsg,
 		}
+	}
+
+	// stoppedSnapshot is the final publish on every stop path: not running, but
+	// keeping the position so the UI can offer "continue from here".
+	stoppedSnapshot := func() Status {
+		return Status{ItemIndex: p.idx, TotalItems: len(items), PlaylistID: playlistID}
+	}
+
+	// publish refreshes the status snapshot and drives the banner fade. It returns
+	// the snapshot so the caller can broadcast it without re-reading under the lock.
+	publish := func() Status {
+		s := snapshot("")
 		e.setStatus(s)
 
 		// Banner: track the *audible* song. On a manual cut the old song's fade
@@ -395,6 +412,7 @@ func (e *Engine) run(enc *encoder, encCfg encoderConfig, items []services.FlowIt
 			enc.SetBannerFade(q)
 			fadeWritten = q
 		}
+		return s
 	}
 	publish()
 
@@ -433,26 +451,25 @@ func (e *Engine) run(enc *encoder, encCfg encoderConfig, items []services.FlowIt
 		for {
 			encFails++
 			backoff := encReconnectBackoff(encFails)
-			s := Status{
-				Running: true, Holding: p.holding, Paused: p.paused,
-				ItemIndex: p.idx, QueuedIndex: p.queued, TotalItems: len(items),
-				PlaylistID: playlistID, NowPlaying: p.nowPlayingDesc(), NextUp: p.nextUpDesc(),
-				Played: p.playedCopy(),
-				Error:  "stream output dropped — reconnecting…",
-			}
+			s := snapshot("stream output dropped — reconnecting…")
 			e.setStatus(s)
 			e.broadcast(s)
-			// Wait out the backoff, but honor a Stop while we are down.
+			// Wait out the backoff, but honor the critical commands while we are down.
 			select {
 			case c := <-e.cmd:
-				if c.kind == cmdStop {
-					// Mirror the main-loop stop: publish a clean position snapshot.
-					st := Status{ItemIndex: p.idx, TotalItems: len(items), PlaylistID: playlistID}
+				switch c.kind {
+				case cmdStop:
+					st := stoppedSnapshot()
 					e.setStatus(st)
 					e.broadcast(st)
 					return false
+				case cmdPause:
+					// Pause goes through sendCritical precisely because dropping one
+					// leaves the show running against the operator's intent — so it
+					// must be honored here too, not swallowed with the rest.
+					p.pause()
 				}
-				// Other commands are dropped while the output is down.
+				// The remaining commands need a live output; they are dropped.
 			case <-time.After(backoff):
 			}
 			ne, err := startEncoder(encCfg)
@@ -489,8 +506,7 @@ func (e *Engine) run(enc *encoder, encCfg encoderConfig, items []services.FlowIt
 					log.Printf("playout: stop — fed %.2fs of audio in %.2fs wall (ratio %.3f)",
 						float64(written)/sampleRate, time.Since(start).Seconds(),
 						(float64(written)/sampleRate)/time.Since(start).Seconds())
-					// Keep position info so the UI can offer "continue from here".
-					s := Status{ItemIndex: p.idx, TotalItems: len(items), PlaylistID: playlistID}
+					s := stoppedSnapshot()
 					e.setStatus(s)
 					e.broadcast(s)
 					return
@@ -563,8 +579,7 @@ func (e *Engine) run(enc *encoder, encCfg encoderConfig, items []services.FlowIt
 		}
 
 		tPub := time.Now()
-		publish()
-		e.broadcast(e.Status())
+		e.broadcast(publish())
 		if diag {
 			if d := time.Since(tPub); d > diagMaxPub {
 				diagMaxPub = d
