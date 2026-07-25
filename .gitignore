@@ -28,6 +28,12 @@ go.work.sum
 # env file
 .env
 
+# SQLite databases (the configured one lives under /data, but a stray copy
+# anywhere else must not be committed either)
+*.db
+*.db-wal
+*.db-shm
+
 # Compiled binary
 /playout
 

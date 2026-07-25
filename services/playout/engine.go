@@ -13,6 +13,26 @@ import (
 // jitter from the mix tick.
 const ringSize = bytesPerSec / 2
 
+// Run-loop tunables.
+const (
+	// paceTick is how often the run loop tops the encoder up. Short enough that
+	// a skip or a soundboard trigger lands promptly; the whole loop body runs
+	// once per tick, so anything expensive in it costs 1/paceTick per second.
+	paceTick = 5 * time.Millisecond
+	// startupLead is how far ahead of the wall clock audio is produced, so the
+	// encoder never starves on a scheduling hiccup.
+	startupLead = 300 * time.Millisecond
+	// cmdQueueDepth buffers control commands so a handler never blocks on the
+	// run goroutine. Critical commands that must not be dropped when this fills
+	// go through sendCritical instead.
+	cmdQueueDepth = 8
+	// criticalCmdTimeout bounds sendCritical's wait for room in the queue.
+	criticalCmdTimeout = 2 * time.Second
+	// artUnset marks "no art published yet" for the last-installed art path.
+	// It cannot be "": that is a legitimate value meaning the placeholder.
+	artUnset = "\x00"
+)
+
 // Encoder reconnect policy. When the persistent ffmpeg dies (e.g. the RTMP
 // relay drops the connection), the show does not end — the run loop brings up a
 // fresh encoder and keeps going. Backoff grows while reconnects keep failing
@@ -198,7 +218,7 @@ func (e *Engine) Start(items []services.FlowItem, set services.Settings, playlis
 
 	vm := &voiceMixer{}
 	e.running = true
-	e.cmd = make(chan command, 8)
+	e.cmd = make(chan command, cmdQueueDepth)
 	e.vmix = vm
 	// The run goroutine owns `items`; the UI reads an independent copy so
 	// SetItemAutoNext can update both sides without a data race.
@@ -288,7 +308,7 @@ func (e *Engine) sendCritical(c command) {
 	}
 	select {
 	case ch <- c:
-	case <-time.After(2 * time.Second):
+	case <-time.After(criticalCmdTimeout):
 		log.Printf("playout: critical control command (kind %d) dropped; run loop unresponsive", c.kind)
 	}
 }
@@ -332,10 +352,10 @@ func (e *Engine) run(enc *encoder, encCfg encoderConfig, items []services.FlowIt
 	}
 
 	start := time.Now()
-	lead := int64(sampleRate * 300 / 1000) // 300ms startup lead
-	written := int64(0)                    // frames written
+	lead := int64(sampleRate) * int64(startupLead) / int64(time.Second)
+	written := int64(0) // frames written
 	lastText := ""
-	lastArt := "\x00" // sentinel: first publish always installs the art/placeholder
+	lastArt := artUnset // the first publish always installs the art/placeholder
 
 	// Banner fade state: fadeAlpha animates toward 1 (shown) / 0 (hidden) over
 	// fadeDur; quantized levels are pushed to the encoder over ZMQ (SetBannerFade).
@@ -424,7 +444,7 @@ func (e *Engine) run(enc *encoder, encCfg encoderConfig, items []services.FlowIt
 	}
 	publish()
 
-	ticker := time.NewTicker(5 * time.Millisecond)
+	ticker := time.NewTicker(paceTick)
 	defer ticker.Stop()
 
 	// Real-time loop diagnostics (opt-in via PLAYOUT_DIAG=1). Clean output PTS can
@@ -493,7 +513,7 @@ func (e *Engine) run(enc *encoder, encCfg encoderConfig, items []services.FlowIt
 			start = start.Add(time.Since(downStart)) // exclude downtime from the pacing clock
 			lastReconnect = time.Now()
 			enc.SetNowPlaying(lastText)
-			if lastArt != "\x00" {
+			if lastArt != artUnset {
 				enc.SetNowArt(lastArt)
 			}
 			enc.SetBannerFade(fadeWritten)

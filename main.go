@@ -207,7 +207,7 @@ func main() {
 		r.HandleFunc("/debug/playout/stop", app.DebugStop).Methods("GET", "POST")
 		r.HandleFunc("/debug/playout/skip", app.DebugSkip).Methods("GET", "POST")
 		r.HandleFunc("/debug/playout/play", app.DebugPlay).Methods("GET", "POST")
-		log.Println("PLAYOUT_DIAG: debug control at http://localhost:8080/debug/playout/{stats,playlists,start,stop}")
+		log.Println("PLAYOUT_DIAG: debug control at http://localhost:8080/debug/playout/{stats,playlists,start,stop,skip,play}")
 	}
 
 	// Static assets.

@@ -408,7 +408,7 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 	}
 
 	e := &encoder{cmd: cmd, stdin: stdin, nowTxt: c.NowTxtPath, artLive: c.ArtLivePath, zmqAddr: zmqAddr, bannerOn: banner, done: make(chan struct{})}
-	e.stdinCh = make(chan []byte, 256) // ~5s of 20ms chunks; decouples the pacing loop from pipe:0
+	e.stdinCh = make(chan []byte, encoderQueueDepth) // decouples the pacing loop from pipe:0
 	go e.stdinPump()
 	if banner {
 		// Drive the banner fade over ZMQ. The tickle is buffered so a fade level
@@ -419,7 +419,7 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 	}
 	if vizLn != nil {
 		e.vizLn = vizLn
-		e.vizCh = make(chan []byte, 256) // ~5s of 20ms chunks
+		e.vizCh = make(chan []byte, encoderQueueDepth)
 		go e.vizFeed()
 	}
 	go func() { _ = cmd.Wait(); close(e.done) }()
@@ -475,7 +475,8 @@ func (e *encoder) vizFeed() {
 // Write hands a PCM chunk to the encoder. It never touches stdin directly:
 // stdinPump owns that write so a stalled pipe:0 can't freeze this call (and the
 // viz feed with it). A prior pipe:0 error (ffmpeg died) is surfaced here so the
-// pacing loop stops the show. run allocates a fresh chunk per tick and discards
+// pacing loop can bring up a fresh encoder (it reconnects rather than ending the
+// show — see reconnectEncoder). run allocates a fresh chunk per tick and discards
 // it after Write, so both the viz send and the pump handoff can retain it
 // without copying.
 func (e *encoder) Write(p []byte) error {
@@ -560,6 +561,21 @@ func (e *encoder) SetNowArt(src string) {
 // fadeLevels quantizes banner fade alpha; level 0 = hidden, fadeLevels = shown.
 const fadeLevels = 15
 
+// Encoder plumbing tunables.
+const (
+	// encoderQueueDepth buffers the PCM handed to stdinPump and to the viz feed:
+	// chunkFrames is 20ms, so this is ~5s of slack absorbing a stalled pipe:0 or
+	// a slow video branch without blocking the pacing loop.
+	encoderQueueDepth = 256
+	// The banner's zmq filter binds its REP socket a moment after ffmpeg starts,
+	// so the dial is retried across this budget before the fade is given up on.
+	zmqDialRetryEvery = 100 * time.Millisecond
+	zmqDialBudget     = 5 * time.Second
+	// How long Stop waits for ffmpeg to finalize the FLV after stdin EOF before
+	// killing it.
+	encoderReapTimeout = 3 * time.Second
+)
+
 // SetBannerFade sets the banner fade to level (0..fadeLevels). The engine steps
 // the level over time to animate the banner in and out. This only stamps the
 // latest level and pokes zmqSender — it never blocks the pacing loop (a full
@@ -592,7 +608,7 @@ func (e *encoder) zmqSender() {
 	defer req.Close()
 	// ffmpeg binds its REP socket a moment after process start; retry the dial.
 	dialed := false
-	for i := 0; i < 50; i++ {
+	for i := 0; i < int(zmqDialBudget/zmqDialRetryEvery); i++ {
 		if err := req.Dial(e.zmqAddr); err == nil {
 			dialed = true
 			break
@@ -600,7 +616,7 @@ func (e *encoder) zmqSender() {
 		select {
 		case <-e.done:
 			return
-		case <-time.After(100 * time.Millisecond):
+		case <-time.After(zmqDialRetryEvery):
 		}
 	}
 	if !dialed {
@@ -645,14 +661,15 @@ func freePort() (int, error) {
 
 // Stop closes stdinCh so stdinPump flushes any buffered PCM and then EOFs pipe:0
 // (→ -shortest ends the stream and finalizes the FLV), and reaps the process,
-// falling back to a kill if ffmpeg hangs. Safe because run's defer calls Stop
-// only after the pacing loop has stopped calling Write.
+// falling back to a kill if ffmpeg hangs. Callers are run's defer and
+// reconnectEncoder, both on the run goroutine and both after the pacing loop has
+// stopped calling Write on this encoder; stopOnce makes a repeat call harmless.
 func (e *encoder) Stop() {
 	e.stopOnce.Do(func() {
 		close(e.stdinCh)
 		select {
 		case <-e.done:
-		case <-time.After(3 * time.Second):
+		case <-time.After(encoderReapTimeout):
 			if e.cmd.Process != nil {
 				_ = e.cmd.Process.Kill()
 			}

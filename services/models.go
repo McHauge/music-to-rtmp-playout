@@ -7,7 +7,7 @@ type Track struct {
 	ID          int64
 	Title       string
 	Artist      string
-	Source      string // "youtube" | "upload"
+	Source      string // "youtube" | "upload" | "spotify"
 	FilePath    string
 	DurationSec float64
 	ArtPath     string // normalized square cover art (300x300 png); "" = none

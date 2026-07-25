@@ -59,7 +59,7 @@ Spotify playlist import (`spotify_service.go`) is metadata-only: `SpotifyService
 
 ## Conventions
 
-- **Handlers return HTML, never JSON** — render a `templates/partials/*.gohtml` fragment and `PatchElements` it over SSE. Add a template func in `handlers/template.go` rather than formatting in the handler.
+- **Handlers return HTML, never JSON** — render a `templates/partials/*.gohtml` fragment and `PatchElements` it over SSE. Add a template func in `handlers/template.go` rather than formatting in the handler. The one exception is `handlers/debug_handlers.go`, which serves JSON on purpose for machine consumption and is registered only when `PLAYOUT_DIAG` is set.
 - **Don't touch engine playback state from handlers** — go through `Engine` methods (`Start/Stop/Skip/Play/TriggerClip`), which marshal onto the `run` goroutine via channels.
 - **Audio format is invariant** — 48k/stereo/s16le. Any new PCM source (soundboard, new item type) must produce this exact format or the mix math and encoder break.
 - The bundled Linux ffmpeg/yt-dlp are vendored into the Docker image at build time (`Dockerfile` tools stage). The Dockerfile has two final targets: the default (production) image is app-only; the `dev` target (used by docker compose) adds MediaMTX and runs it alongside the app (`docker-entrypoint.sh`).
