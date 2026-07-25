@@ -48,69 +48,55 @@ func (app *App) StartStream(w http.ResponseWriter, r *http.Request) {
 	app.patchRundown(sse, 0)
 }
 
-// StopStream ends the live show.
-func (app *App) StopStream(w http.ResponseWriter, r *http.Request) {
+// control runs an engine action, then re-patches the status panel and rundown
+// over a fresh SSE. Every simple transport button funnels through here — they
+// differ only in which Engine method fires.
+func (app *App) control(w http.ResponseWriter, r *http.Request, action func()) {
 	sse := datastar.NewSSE(w, r)
-	app.Engine.Stop()
+	action()
 	app.patchStatus(sse)
 	app.patchRundown(sse, 0)
+}
+
+// StopStream ends the live show.
+func (app *App) StopStream(w http.ResponseWriter, r *http.Request) {
+	app.control(w, r, app.Engine.Stop)
 }
 
 // SkipItem advances to the next flow item.
 func (app *App) SkipItem(w http.ResponseWriter, r *http.Request) {
-	sse := datastar.NewSSE(w, r)
-	app.Engine.Skip()
-	app.patchStatus(sse)
-	app.patchRundown(sse, 0)
+	app.control(w, r, app.Engine.Skip)
 }
 
 // PlayResume releases a manual hold/gate or resumes a paused show.
 func (app *App) PlayResume(w http.ResponseWriter, r *http.Request) {
-	sse := datastar.NewSSE(w, r)
-	app.Engine.Play()
-	app.patchStatus(sse)
-	app.patchRundown(sse, 0)
+	app.control(w, r, app.Engine.Play)
 }
 
 // PauseStream freezes playback mid-item (the stream stays live with silence).
 func (app *App) PauseStream(w http.ResponseWriter, r *http.Request) {
-	sse := datastar.NewSSE(w, r)
-	app.Engine.Pause()
-	app.patchStatus(sse)
-	app.patchRundown(sse, 0)
+	app.control(w, r, app.Engine.Pause)
 }
 
 // PrevItem restarts the previous flow item from its beginning.
 func (app *App) PrevItem(w http.ResponseWriter, r *http.Request) {
-	sse := datastar.NewSSE(w, r)
-	app.Engine.Prev()
-	app.patchStatus(sse)
-	app.patchRundown(sse, 0)
+	app.control(w, r, app.Engine.Prev)
 }
 
 // RestartItem restarts the current flow item from its beginning.
 func (app *App) RestartItem(w http.ResponseWriter, r *http.Request) {
-	sse := datastar.NewSSE(w, r)
-	app.Engine.RestartItem()
-	app.patchStatus(sse)
-	app.patchRundown(sse, 0)
+	app.control(w, r, app.Engine.RestartItem)
 }
 
 // JumpToItem jumps the live show to the flow item at ?i=.
 func (app *App) JumpToItem(w http.ResponseWriter, r *http.Request) {
-	sse := datastar.NewSSE(w, r)
 	i, _ := strconv.Atoi(r.URL.Query().Get("i"))
-	app.Engine.JumpTo(i)
-	app.patchStatus(sse)
-	app.patchRundown(sse, 0)
+	app.control(w, r, func() { app.Engine.JumpTo(i) })
 }
 
 // TogglePauseAfter arms/disarms the one-shot pause-after-current-item flag.
 func (app *App) TogglePauseAfter(w http.ResponseWriter, r *http.Request) {
-	sse := datastar.NewSSE(w, r)
-	app.Engine.TogglePauseAfter()
-	app.patchStatus(sse)
-	app.patchRundown(sse, 0)
+	app.control(w, r, app.Engine.TogglePauseAfter)
 }
 
 // StreamSetAutoNext toggles the auto-next flag of one flow item from the
