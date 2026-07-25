@@ -41,7 +41,10 @@ func (app *App) UploadTrack(w http.ResponseWriter, r *http.Request) {
 func (app *App) DeleteTrack(w http.ResponseWriter, r *http.Request) {
 	id := formInt64(r, "id")
 	if id != 0 {
-		_ = app.Library.DeleteTrack(id)
+		if err := app.Library.DeleteTrack(id); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	http.Redirect(w, r, "/library", http.StatusSeeOther)
 }
@@ -61,7 +64,10 @@ func (app *App) EditTrack(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
 	id := formInt64(r, "id")
 	if id != 0 {
-		_ = app.Library.UpdateMeta(id, r.FormValue("title"), r.FormValue("artist"))
+		if err := app.Library.UpdateMeta(id, r.FormValue("title"), r.FormValue("artist")); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	http.Redirect(w, r, "/library", http.StatusSeeOther)
 }

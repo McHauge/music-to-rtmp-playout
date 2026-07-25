@@ -84,9 +84,21 @@ func (app *App) FlowPage(w http.ResponseWriter, r *http.Request) {
 // to the streaming show; otherwise ?play= (deep link from the flow page) or the
 // last-opened show pre-selects it.
 func (app *App) StreamPage(w http.ResponseWriter, r *http.Request) {
-	playlists, _ := app.Flow.ListPlaylists()
-	st, _ := app.Settings.Get()
-	clips, _ := app.Soundboard.List()
+	playlists, err := app.Flow.ListPlaylists()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	st, err := app.Settings.Get()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	clips, err := app.Soundboard.List()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	status := app.Engine.Status()
 	running := status.Running
 
@@ -127,16 +139,26 @@ func (app *App) StreamPage(w http.ResponseWriter, r *http.Request) {
 
 // SoundboardPage shows clip buttons + upload.
 func (app *App) SoundboardPage(w http.ResponseWriter, r *http.Request) {
-	clips, _ := app.Soundboard.List()
+	clips, err := app.Soundboard.List()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	app.render(w, "page-soundboard", PageData{
 		Title: "Soundboard", Page: "soundboard", Theme: app.currentTheme(),
 		Extra: map[string]any{"Clips": clips, "Running": app.Engine.Running()},
 	})
 }
 
-// SettingsPage shows the configuration form.
+// SettingsPage shows the configuration form. A load error must not render the
+// form from a zero-valued Settings: the operator would then submit it and
+// overwrite the real row with defaults.
 func (app *App) SettingsPage(w http.ResponseWriter, r *http.Request) {
-	st, _ := app.Settings.Get()
+	st, err := app.Settings.Get()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	app.render(w, "page-settings", PageData{
 		Title: "Settings", Page: "settings", Theme: app.currentTheme(),
 		Extra: map[string]any{"Settings": st, "Themes": themeList},

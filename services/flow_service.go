@@ -122,8 +122,12 @@ func (s *FlowService) GetItems(playlistID int64) ([]FlowItem, error) {
 
 // AddItem appends an item to the end of a show's flow.
 func (s *FlowService) AddItem(playlistID int64, itemType string, trackID *int64, breakSec int, label string, autoNext bool) (int64, error) {
+	// Not ignorable: on a read failure nextPos stays 0 and the new item silently
+	// lands at the *front* of the rundown instead of the end.
 	var nextPos int
-	_ = s.db.QueryRow(`SELECT COALESCE(MAX(position), -1) + 1 FROM flow_items WHERE playlist_id = ?`, playlistID).Scan(&nextPos)
+	if err := s.db.QueryRow(`SELECT COALESCE(MAX(position), -1) + 1 FROM flow_items WHERE playlist_id = ?`, playlistID).Scan(&nextPos); err != nil {
+		return 0, fmt.Errorf("next flow position: %w", err)
+	}
 	an := 0
 	if autoNext {
 		an = 1

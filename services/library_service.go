@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -415,11 +416,20 @@ func (s *LibraryService) importInfoJSONs(source string, progress func(string)) (
 			dur = s.probeDuration(audioPath)
 		}
 		artPath := s.importArt(info.ID)
-		if t, err := s.insertTrack(info.Title, artist, source, audioPath, dur, artPath); err == nil {
-			out = append(out, *t)
+		t, err := s.insertTrack(info.Title, artist, source, audioPath, dur, artPath)
+		if err != nil {
+			// Downloaded but not recorded: without this the track just vanishes
+			// from the result and "added N of M" has an unexplained gap.
+			log.Printf("library: downloaded %q but could not record it: %v", info.Title, err)
 			if progress != nil {
-				progress("imported: " + info.Title)
+				progress("failed: could not save " + info.Title + ": " + err.Error())
 			}
+			_ = os.Remove(e.jsonPath)
+			continue
+		}
+		out = append(out, *t)
+		if progress != nil {
+			progress("imported: " + info.Title)
 		}
 		_ = os.Remove(e.jsonPath) // tidy: metadata is now in the DB
 	}

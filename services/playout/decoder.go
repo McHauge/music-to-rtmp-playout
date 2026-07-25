@@ -3,10 +3,44 @@ package playout
 import (
 	"fmt"
 	"io"
+	"log"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 )
+
+// decoderStderrLimit caps the retained ffmpeg diagnostics per decoder; the
+// first few lines are the useful ones.
+const decoderStderrLimit = 4 << 10
+
+// boundedBuffer collects up to limit bytes and discards the rest, so a chatty
+// or looping subprocess cannot grow it without bound. Safe for concurrent use
+// because exec writes to it from its own goroutine while Stop may read it.
+type boundedBuffer struct {
+	mu    sync.Mutex
+	buf   []byte
+	limit int
+}
+
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	n := len(p)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if room := b.limit - len(b.buf); room > 0 {
+		if len(p) > room {
+			p = p[:room]
+		}
+		b.buf = append(b.buf, p...)
+	}
+	return n, nil // report a full write even when truncating; dropping is intentional
+}
+
+func (b *boundedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return strings.TrimSpace(string(b.buf))
+}
 
 // decoder runs a short-lived ffmpeg that normalizes one song file to canonical
 // 48k/stereo/s16le PCM, feeding a ring buffer. Decoupling decode from the mix
@@ -30,6 +64,11 @@ func startDecoder(ffmpegPath, filePath string, ringSize int) (*decoder, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decoder stdout pipe: %w", err)
 	}
+	// Capture ffmpeg's diagnostics instead of discarding them into a nil writer:
+	// without this a corrupt or unsupported file gives no clue why a song came
+	// out short. Bounded so a pathological file can't grow it without limit.
+	stderr := &boundedBuffer{limit: decoderStderrLimit}
+	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("decoder ffmpeg start: %w", err)
 	}
@@ -61,6 +100,14 @@ func startDecoder(ffmpegPath, filePath string, ringSize int) (*decoder, error) {
 				return
 			}
 			if err != nil {
+				// Closing the ring here is indistinguishable from a clean
+				// end-of-song to the engine, which just advances — so say what
+				// actually happened, with whatever ffmpeg reported.
+				if msg := stderr.String(); msg != "" {
+					log.Printf("playout: decode of %s ended early: %v — ffmpeg said: %s", filePath, err, msg)
+				} else {
+					log.Printf("playout: decode of %s ended early: %v", filePath, err)
+				}
 				return
 			}
 		}

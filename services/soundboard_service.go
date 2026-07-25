@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -129,5 +130,10 @@ func (s *SoundboardService) decodeToPCM(in, out string) error {
 		"-i", in,
 		"-ar", "48000", "-ac", "2", "-f", "s16le",
 		"-y", out)
-	return cmd.Run()
+	// Surface ffmpeg's own message: a bare "exit status 1" tells the operator
+	// nothing about why their clip would not convert (matches normalizeArt).
+	if msg, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("clip decode failed: %w (%s)", err, strings.TrimSpace(string(msg)))
+	}
+	return nil
 }

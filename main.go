@@ -85,22 +85,28 @@ func main() {
 
 	// Seed settings from config defaults on first run (empty RTMP URL). The
 	// resolution backfill also covers DBs migrated from before it was a setting.
-	if st, err := settingsSvc.Get(); err == nil {
-		seed := st.RTMPURL == ""
-		if seed {
-			st.RTMPURL = cfg.RTMPURL
-			st.BgImagePath = cfg.BgImagePath
-			st.VideoFPS = cfg.VideoFPS
-			st.VideoBitrate = cfg.VideoBitrate
-			st.AudioBitrate = cfg.AudioBitrate
-			st.Theme = cfg.Theme
-		}
-		if st.VideoWidth <= 0 || st.VideoHeight <= 0 {
-			st.VideoWidth, st.VideoHeight = cfg.VideoWidth, cfg.VideoHeight
-			seed = true
-		}
-		if seed {
-			_ = settingsSvc.Save(st)
+	// A failure here is fatal rather than silent: the alternative is booting with
+	// an unseeded RTMP URL, where the first Start fails with no explanation.
+	st, err := settingsSvc.Get()
+	if err != nil {
+		log.Fatalf("read settings: %v", err)
+	}
+	seed := st.RTMPURL == ""
+	if seed {
+		st.RTMPURL = cfg.RTMPURL
+		st.BgImagePath = cfg.BgImagePath
+		st.VideoFPS = cfg.VideoFPS
+		st.VideoBitrate = cfg.VideoBitrate
+		st.AudioBitrate = cfg.AudioBitrate
+		st.Theme = cfg.Theme
+	}
+	if st.VideoWidth <= 0 || st.VideoHeight <= 0 {
+		st.VideoWidth, st.VideoHeight = cfg.VideoWidth, cfg.VideoHeight
+		seed = true
+	}
+	if seed {
+		if err := settingsSvc.Save(st); err != nil {
+			log.Fatalf("seed settings: %v", err)
 		}
 	}
 

@@ -82,7 +82,13 @@ func (app *App) MoveItem(w http.ResponseWriter, r *http.Request) {
 	itemID := formInt64(r, "id")
 	dir := r.FormValue("dir") // "up" | "down"
 
-	items, _ := app.Flow.GetItems(plID)
+	items, err := app.Flow.GetItems(plID)
+	if err != nil {
+		// Without this the read failure looks exactly like "item not found" and
+		// the redirect below reports success.
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	ids := make([]int64, len(items))
 	pos := -1
 	for i, it := range items {

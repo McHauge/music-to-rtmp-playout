@@ -74,15 +74,42 @@ type encoder struct {
 // loop iteration), and on Windows a rename replace has a delete-pending window
 // in which that re-open fails — fatal to the filter/input and the stream. A
 // reader can see a torn write instead, which at worst glitches a single frame.
+// A failure here is silent on screen — the banner simply freezes on its last
+// content — so it is logged, rate-limited because the caller runs per item
+// change and a broken directory would otherwise flood the log.
 func overwriteInPlace(path string, data []byte) {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0o644)
 	if err != nil {
+		logOverwriteErr(path, err)
 		return
 	}
-	if _, err := f.Write(data); err == nil {
-		_ = f.Truncate(int64(len(data)))
+	if _, err := f.Write(data); err != nil {
+		logOverwriteErr(path, err)
+	} else if err := f.Truncate(int64(len(data))); err != nil {
+		logOverwriteErr(path, err)
 	}
-	_ = f.Close()
+	if err := f.Close(); err != nil {
+		logOverwriteErr(path, err)
+	}
+}
+
+// overwriteLogEvery throttles the overwriteInPlace diagnostic: enough to notice
+// a broken art directory, not enough to drown the log.
+const overwriteLogEvery = 30 * time.Second
+
+var overwriteLogMu struct {
+	sync.Mutex
+	last time.Time
+}
+
+func logOverwriteErr(path string, err error) {
+	overwriteLogMu.Lock()
+	defer overwriteLogMu.Unlock()
+	if time.Since(overwriteLogMu.last) < overwriteLogEvery {
+		return
+	}
+	overwriteLogMu.last = time.Now()
+	log.Printf("playout: banner asset %s could not be updated (%v) — the overlay will hold its last content", path, err)
 }
 
 // encoderConfig captures everything the encoder ffmpeg needs.
@@ -522,6 +549,8 @@ func (e *encoder) SetNowArt(src string) {
 	if src != "" {
 		if b, err := os.ReadFile(src); err == nil {
 			data = b
+		} else {
+			log.Printf("playout: cover art %s unreadable (%v) — showing the placeholder", src, err)
 		}
 	}
 	overwriteInPlace(e.artLive, data)

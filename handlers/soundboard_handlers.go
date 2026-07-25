@@ -30,7 +30,10 @@ func (app *App) UploadClip(w http.ResponseWriter, r *http.Request) {
 func (app *App) DeleteClip(w http.ResponseWriter, r *http.Request) {
 	id := formInt64(r, "id")
 	if id != 0 {
-		_ = app.Soundboard.Delete(id)
+		if err := app.Soundboard.Delete(id); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	http.Redirect(w, r, "/soundboard", http.StatusSeeOther)
 }
