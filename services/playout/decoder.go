@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"sync"
 	"time"
 )
 
@@ -11,10 +12,11 @@ import (
 // 48k/stereo/s16le PCM, feeding a ring buffer. Decoupling decode from the mix
 // tick (via the ring) means decode jitter never stalls the stream.
 type decoder struct {
-	cmd   *exec.Cmd
-	ring  *RingBuffer
-	done  chan struct{}
-	abort chan struct{} // closed by Stop; unblocks a reader stuck on a full ring
+	cmd      *exec.Cmd
+	ring     *RingBuffer
+	done     chan struct{}
+	abort    chan struct{} // closed by Stop; unblocks a reader stuck on a full ring
+	stopOnce sync.Once     // Stop is idempotent: close(abort) must not panic on a second call
 }
 
 // startDecoder spawns the ffmpeg decoder for filePath. ringSize bytes of
@@ -78,14 +80,17 @@ func (d *decoder) Finished() bool { return d.ring.Drained() }
 // the swap onto a freshly spawned decoder so playback starts clean.
 func (d *decoder) Ready(min int) bool { return d.ring.Available() >= min || d.ring.Closed() }
 
-// Stop kills the ffmpeg process (used on skip/stop) and reaps it.
+// Stop kills the ffmpeg process (used on skip/stop) and reaps it. Idempotent —
+// the shutdown drain and a normal reap can both land on the same decoder.
 func (d *decoder) Stop() {
-	close(d.abort)
-	if d.cmd != nil && d.cmd.Process != nil {
-		_ = d.cmd.Process.Kill()
-	}
-	<-d.done
-	_ = d.cmd.Wait() // reap zombie
+	d.stopOnce.Do(func() {
+		close(d.abort)
+		if d.cmd != nil && d.cmd.Process != nil {
+			_ = d.cmd.Process.Kill()
+		}
+		<-d.done
+		_ = d.cmd.Wait() // reap zombie
+	})
 }
 
 // reapAsync stops a decoder on a background goroutine so its blocking

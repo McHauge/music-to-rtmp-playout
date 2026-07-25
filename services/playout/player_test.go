@@ -2,7 +2,9 @@ package playout
 
 import (
 	"encoding/binary"
+	"errors"
 	"testing"
+	"time"
 
 	"music-to-rtmp-playout/services"
 )
@@ -184,5 +186,57 @@ func TestFinishedAfterLastItem(t *testing.T) {
 	}
 	if got := p.nowPlayingDesc(); got != "Show finished" {
 		t.Fatalf("desc=%q, want 'Show finished'", got)
+	}
+}
+
+// A queueNext that discards an in-flight prewarm cannot cancel the helper
+// goroutine, and servicePrewarm then aims a second spawn at the new target — so
+// more than one delivery can be outstanding when the operator stops the show.
+// shutdown must drain every one of them: an undrained result holds a decoder
+// nobody will ever Stop, whose ffmpeg then outlives the show.
+func TestShutdownDrainsEveryInFlightSpawn(t *testing.T) {
+	p := &player{queued: -1, prewarmIdx: -1, prewarmCh: make(chan prewarmResult, 1)}
+	p.spawnsInFlight = 2
+
+	const spawns = 2
+	delivered := make(chan int, spawns)
+	for i := 0; i < spawns; i++ {
+		go func(i int) {
+			p.prewarmCh <- prewarmResult{idx: i} // blocks until the drain consumes it
+			delivered <- i
+		}(i)
+	}
+
+	p.shutdown()
+
+	for i := 0; i < spawns; i++ {
+		select {
+		case <-delivered:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("shutdown drained %d of %d in-flight spawns — the rest leak an ffmpeg each", i, spawns)
+		}
+	}
+	if p.spawnsInFlight != 0 {
+		t.Errorf("spawnsInFlight=%d after shutdown, want 0", p.spawnsInFlight)
+	}
+}
+
+// Every delivery servicePrewarm consumes must decrement the in-flight count,
+// including one for a target that has already been discarded — otherwise
+// shutdown over-drains and blocks a goroutine forever.
+func TestServicePrewarmDecrementsSpawnCount(t *testing.T) {
+	p := &player{
+		items:      []services.FlowItem{{Type: services.ItemBreak, BreakSec: 1}},
+		queued:     -1,
+		prewarmIdx: -1, // the prewarm this result targets was discarded
+		prewarmCh:  make(chan prewarmResult, 1),
+	}
+	p.spawnsInFlight = 1
+	p.prewarmCh <- prewarmResult{idx: 7, err: errors.New("spawn failed")}
+
+	p.servicePrewarm()
+
+	if p.spawnsInFlight != 0 {
+		t.Errorf("spawnsInFlight=%d after consuming one delivery, want 0", p.spawnsInFlight)
 	}
 }

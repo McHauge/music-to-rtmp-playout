@@ -53,6 +53,11 @@ type player struct {
 	prewarmIdx int                // item index a prewarm targets (in flight OR ready); -1 = none
 	prewarmDec *decoder           // ready prewarmed decoder adopted from prewarmCh; nil until ready
 	prewarmCh  chan prewarmResult // buffered(1); the helper goroutine hands the decoder back to run
+	// spawnsInFlight counts launched-but-not-yet-received spawns. discardPrewarm
+	// resets prewarmIdx but cannot cancel a helper already running, so more than
+	// one can be outstanding; shutdown must drain exactly this many results or the
+	// undrained decoders' ffmpeg processes outlive the show.
+	spawnsInFlight int
 
 	// Manual-cut transition state. The outgoing decoder renders a fade tail to
 	// silence that is summed on top of the incoming program (a crossfade); the
@@ -194,10 +199,13 @@ func (p *player) shouldPrewarmNow() bool {
 }
 
 // launchSpawn starts the decoder for item idx on a helper goroutine, delivering
-// into prewarmCh. The caller must have set prewarmIdx = idx first, so at most
-// one spawn is ever in flight.
+// into prewarmCh. The caller must have set prewarmIdx = idx first. Usually one
+// spawn is in flight, but a discardPrewarm followed by a re-aim can leave an
+// older helper still running, so every launch is counted in spawnsInFlight and
+// servicePrewarm/shutdown account for each delivery.
 func (p *player) launchSpawn(idx int) {
 	ch := p.prewarmCh
+	p.spawnsInFlight++
 	p.spawnStart = time.Now()
 	ffmpeg, path := p.ffmpegPath, p.items[idx].Track.FilePath // copy — the helper must not touch player
 	go func() {
@@ -215,6 +223,7 @@ func (p *player) servicePrewarm() {
 	// (1) Adopt / discard whatever the helper handed back.
 	select {
 	case res := <-p.prewarmCh:
+		p.spawnsInFlight--
 		if res.err == nil && res.dec != nil && res.idx == p.prewarmIdx && p.prewarmDec == nil {
 			p.prewarmDec = res.dec // ready, still targets the live prewarm target
 		} else {
@@ -260,9 +269,10 @@ func (p *player) servicePrewarm() {
 }
 
 // discardPrewarm drops a prewarm that no longer targets the right item. A ready
-// decoder is reaped off-thread; an in-flight one is left to deliver into
-// prewarmCh, where servicePrewarm reaps it because res.idx won't match the reset
-// prewarmIdx (or the shutdown drain reaps it).
+// decoder is reaped off-thread; an in-flight one cannot be cancelled, so it is
+// left to deliver into prewarmCh, where servicePrewarm reaps it because res.idx
+// won't match the reset prewarmIdx. It stays counted in spawnsInFlight so the
+// shutdown drain still accounts for it if the show stops first.
 func (p *player) discardPrewarm() {
 	if p.prewarmDec != nil {
 		reapAsync(p.prewarmDec)
@@ -287,16 +297,22 @@ func (p *player) shutdown() {
 		reapAsync(p.prewarmDec)
 		p.prewarmDec = nil
 	}
-	if p.prewarmIdx >= 0 { // a helper spawn may still be in flight
+	if n := p.spawnsInFlight; n > 0 {
+		// Every launched helper delivers exactly once, so drain one result per
+		// outstanding spawn — not one per prewarmIdx. A queueNext that discards an
+		// in-flight prewarm leaves its helper running while servicePrewarm aims a
+		// second one, and an undrained result means an ffmpeg that outlives the show.
 		ch := p.prewarmCh
 		go func() {
-			res := <-ch // the helper always delivers exactly once
-			if res.dec != nil {
-				res.dec.Stop()
+			for i := 0; i < n; i++ {
+				if res := <-ch; res.dec != nil {
+					res.dec.Stop()
+				}
 			}
 		}()
-		p.prewarmIdx = -1
+		p.spawnsInFlight = 0
 	}
+	p.prewarmIdx = -1
 }
 
 // beginTransition converts a manual cut (skip/jump) of audible audio into a
