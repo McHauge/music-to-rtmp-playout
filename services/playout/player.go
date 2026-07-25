@@ -609,6 +609,12 @@ func (p *player) overlayTrack() *services.Track {
 	return p.items[p.idx].Track
 }
 
+// tailActive reports whether a manual-cut fade tail is still rendering — i.e.
+// the *previous* song is still audible under the current one. The banner keys
+// its transition choreography off this: with a tail it fades out/in alongside
+// the audio; without one (a natural boundary) it swaps in place instantly.
+func (p *player) tailActive() bool { return p.outDec != nil }
+
 // bannerVisible reports whether the now-playing banner should be shown: a song
 // that is playing, or paused mid-play. Breaks, gates/holds, the end of the
 // flow, and a song that is cued but never started (paused at 0:00) hide it.

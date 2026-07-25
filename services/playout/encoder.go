@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -34,8 +35,9 @@ type encoder struct {
 	// stdin audio is then consumed ONLY by the AAC encoder, so a slow video
 	// branch (GPU contention, a stalled banner-image open) can freeze the viz
 	// at worst — it can never back-pressure stdin and cut the broadcast audio.
-	vizLn net.Listener
-	vizCh chan []byte // buffered ~5s; Write drops (viz lags) instead of blocking
+	vizLn      net.Listener
+	vizCh      chan []byte  // buffered ~5s; Write drops (viz lags) instead of blocking
+	vizDropped atomic.Int64 // bytes dropped from vizCh; repaid as silence by vizFeed
 }
 
 // overwriteInPlace replaces path's content without the file ever disappearing:
@@ -316,27 +318,52 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 	if vizLn != nil {
 		e.vizLn = vizLn
 		e.vizCh = make(chan []byte, 256) // ~5s of 20ms chunks
-		go vizFeed(vizLn, e.vizCh)
+		go e.vizFeed()
 	}
 	go func() { _ = cmd.Wait(); close(e.done) }()
 	return e, nil
 }
 
 // vizFeed accepts the encoder ffmpeg's single connection to the viz PCM input
-// and pumps chunks from ch into it. Exits when ch closes (encoder Stop) or the
-// peer goes away; chunks that arrive with no consumer are dropped by Write's
-// non-blocking send, so this goroutine can never wedge the pacing loop.
-func vizFeed(ln net.Listener, ch chan []byte) {
-	conn, err := ln.Accept()
+// and pumps chunks from vizCh into it. The TCP byte count IS the viz timeline
+// (showfreqs derives PTS from samples received), so bytes Write had to drop are
+// repaid as silence before the next chunk — the bars flatline briefly under
+// duress instead of running ahead of the audio forever. Exits when vizCh
+// closes (encoder Stop) or the peer goes away; a full channel never blocks the
+// pacing loop.
+func (e *encoder) vizFeed() {
+	conn, err := e.vizLn.Accept()
 	if err != nil {
 		return // listener closed before ffmpeg connected (startup failure path)
 	}
 	defer conn.Close()
-	for chunk := range ch {
+	var zeros []byte
+	for chunk := range e.vizCh {
+		if d := e.vizDropped.Swap(0); d > 0 {
+			// Beyond ~5s the viz timeline is lost anyway; don't spam zeros.
+			d = min(d, int64(5*bytesPerSec))
+			d -= d % frameBytes
+			log.Printf("playout: viz feed dropped %d bytes — repaying as silence", d)
+			if zeros == nil {
+				zeros = make([]byte, 64*1024)
+			}
+			for d > 0 {
+				n := int64(len(zeros))
+				if d < n {
+					n = d
+				}
+				if _, err := conn.Write(zeros[:n]); err != nil {
+					for range e.vizCh {
+					}
+					return
+				}
+				d -= n
+			}
+		}
 		if _, err := conn.Write(chunk); err != nil {
 			// ffmpeg is gone or stalled hard; drain until close so senders'
 			// buffered chunks don't linger.
-			for range ch {
+			for range e.vizCh {
 			}
 			return
 		}
@@ -351,7 +378,11 @@ func (e *encoder) Write(p []byte) error {
 	if e.vizCh != nil {
 		select {
 		case e.vizCh <- p: // run discards the chunk after Write, so no copy needed
-		default: // viz feed backed up — drop; the viz lags, the audio doesn't
+		default:
+			// Viz feed backed up — drop rather than block, but account for the
+			// bytes so vizFeed repays them as silence and the viz timeline
+			// stays sample-accurate.
+			e.vizDropped.Add(int64(len(p)))
 		}
 	}
 	start := time.Now()

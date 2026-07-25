@@ -289,15 +289,13 @@ func (e *Engine) run(enc *encoder, items []services.FlowItem, vmix *voiceMixer, 
 		}
 		e.setStatus(s)
 
-		// Banner: the displayed content (lastText/lastArt) only ever changes
-		// while the banner is fully hidden. When the wanted content differs
-		// from what is displayed (instant decoder adoption means the song can
-		// change while the banner is still up), the banner is treated as
-		// hidden: it fades out still showing the old song, swaps at alpha 0,
-		// then fades back in with the new one.
+		// Banner: track the *audible* song. On a manual cut the old song's fade
+		// tail is still heard, so the banner fades out with it (old content
+		// held), swaps while hidden, and fades back in as the new song ramps.
+		// At a natural boundary the audio switches instantly, so the banner
+		// hard-swaps in place instead of blinking out and back.
 		wantText, wantArt := p.overlayText(), p.overlayArt()
-		visible := p.bannerVisible() && wantText == lastText && wantArt == lastArt
-		if fadeAlpha == 0 {
+		swap := func() {
 			if wantText != lastText {
 				enc.SetNowPlaying(wantText)
 				lastText = wantText
@@ -306,7 +304,16 @@ func (e *Engine) run(enc *encoder, items []services.FlowItem, vmix *voiceMixer, 
 				enc.SetNowArt(wantArt)
 				lastArt = wantArt
 			}
-			visible = p.bannerVisible() // swapped: fade back in immediately
+		}
+		changed := wantText != lastText || wantArt != lastArt
+		if changed && fadeAlpha > 0 && !p.tailActive() && p.bannerVisible() {
+			swap()
+			changed = false
+		}
+		visible := p.bannerVisible() && !changed
+		if fadeAlpha == 0 && changed {
+			swap()
+			visible = p.bannerVisible() // swapped while hidden: fade back in
 		}
 		now := time.Now()
 		step := now.Sub(lastFadeTick).Seconds() / fadeDur
