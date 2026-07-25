@@ -15,6 +15,29 @@ const bytesPerSec = sampleRate * frameBytes // 192000
 // jitter from the mix tick.
 const ringSize = bytesPerSec / 2
 
+// Encoder reconnect policy. When the persistent ffmpeg dies (e.g. the RTMP
+// relay drops the connection), the show does not end — the run loop brings up a
+// fresh encoder and keeps going. Backoff grows while reconnects keep failing
+// fast and resets once the stream has stayed healthy for encHealthyResetAfter.
+const (
+	encReconnectBackoffMin = 200 * time.Millisecond
+	encReconnectBackoffMax = 30 * time.Second
+	encHealthyResetAfter   = 15 * time.Second
+)
+
+// encReconnectBackoff is the delay before reconnect attempt n (n starts at 1),
+// doubling from the min and capped at the max (also guarding shift overflow).
+func encReconnectBackoff(n int) time.Duration {
+	if n < 1 {
+		n = 1
+	}
+	d := encReconnectBackoffMin << (n - 1)
+	if d <= 0 || d > encReconnectBackoffMax {
+		return encReconnectBackoffMax
+	}
+	return d
+}
+
 // Status is a snapshot of the running show, published to the UI over SSE.
 type Status struct {
 	Running         bool    `json:"running"`
@@ -179,7 +202,7 @@ func (e *Engine) Start(items []services.FlowItem, set services.Settings, playlis
 	// The show starts cued-and-paused; the operator presses Play to go on air.
 	e.setStatus(Status{Running: true, Paused: true, ItemIndex: startAt, QueuedIndex: -1, TotalItems: len(items), PlaylistID: playlistID})
 
-	go e.run(enc, items, vm, playlistID, startAt)
+	go e.run(enc, encCfg, items, vm, playlistID, startAt)
 	return nil
 }
 
@@ -192,7 +215,7 @@ func (e *Engine) Show() ([]services.FlowItem, int64) {
 }
 
 // Stop ends the show (idempotent).
-func (e *Engine) Stop() { e.send(command{kind: cmdStop}) }
+func (e *Engine) Stop() { e.sendCritical(command{kind: cmdStop}) }
 
 // Skip abandons the current item and advances (works while playing or holding).
 func (e *Engine) Skip() { e.send(command{kind: cmdSkip}) }
@@ -201,7 +224,7 @@ func (e *Engine) Skip() { e.send(command{kind: cmdSkip}) }
 func (e *Engine) Play() { e.send(command{kind: cmdPlay}) }
 
 // Pause freezes playback mid-item; the stream stays live with silence.
-func (e *Engine) Pause() { e.send(command{kind: cmdPause}) }
+func (e *Engine) Pause() { e.sendCritical(command{kind: cmdPause}) }
 
 // Prev restarts the previous item (or the first item) from its beginning.
 func (e *Engine) Prev() { e.send(command{kind: cmdPrev}) }
@@ -242,6 +265,26 @@ func (e *Engine) send(c command) {
 	}
 }
 
+// sendCritical enqueues a one-shot command that must not be lost under a full
+// control buffer (Stop/Pause — unlike idempotent skip/jump, a dropped one leaves
+// the stream running). It blocks until the run loop drains a slot (every 5ms
+// tick) and gives up only after a timeout, so it can never deadlock even if run
+// has already exited on the TOCTOU boundary of the running check above.
+func (e *Engine) sendCritical(c command) {
+	e.mu.Lock()
+	ch := e.cmd
+	running := e.running
+	e.mu.Unlock()
+	if !running || ch == nil {
+		return
+	}
+	select {
+	case ch <- c:
+	case <-time.After(2 * time.Second):
+		log.Printf("playout: critical control command (kind %d) dropped; run loop unresponsive", c.kind)
+	}
+}
+
 // TriggerClip overlays a pre-decoded PCM clip on the live program audio.
 // Retriggering the same key restarts the clip instead of layering a copy.
 func (e *Engine) TriggerClip(key, pcmPath string, gain float64) error {
@@ -258,7 +301,7 @@ func (e *Engine) TriggerClip(key, pcmPath string, gain float64) error {
 
 // run is the single owner of playback state. vmix is passed in (rather than
 // read from e.vmix) so the hot loop never touches the shared field.
-func (e *Engine) run(enc *encoder, items []services.FlowItem, vmix *voiceMixer, playlistID int64, startAt int) {
+func (e *Engine) run(enc *encoder, encCfg encoderConfig, items []services.FlowItem, vmix *voiceMixer, playlistID int64, startAt int) {
 	defer func() {
 		enc.Stop()
 		e.mu.Lock()
@@ -368,6 +411,73 @@ func (e *Engine) run(enc *encoder, items []services.FlowItem, vmix *voiceMixer, 
 	var diagWrites int
 	var diagMaxGap, diagMaxPrew, diagMaxPub time.Duration
 
+	// Encoder reconnect state (see encReconnectBackoff). encFails grows while
+	// reconnects keep failing fast; lastReconnect gates the reset back to zero.
+	encFails := 0
+	lastReconnect := time.Time{}
+
+	// reconnectEncoder tears down the dead ffmpeg and brings up a fresh one so a
+	// dropped RTMP link (or an encoder crash) does not end a 24/7 show. It stays
+	// responsive to Stop while down and backs off between attempts. Returns false
+	// only when the operator asked to Stop — the caller then returns. On success
+	// it re-baselines the pacing clock (excluding the downtime, so the stream
+	// resumes live instead of fast-forwarding a buffered backlog) and re-syncs the
+	// banner. now.txt / art_live persist on disk across encoders, but the in-memory
+	// fade level does not, so it is re-sent.
+	reconnectEncoder := func() bool {
+		downStart := time.Now()
+		enc.Stop()
+		if !lastReconnect.IsZero() && time.Since(lastReconnect) > encHealthyResetAfter {
+			encFails = 0 // the stream had been healthy for a while — start backoff fresh
+		}
+		for {
+			encFails++
+			backoff := encReconnectBackoff(encFails)
+			s := Status{
+				Running: true, Holding: p.holding, Paused: p.paused,
+				ItemIndex: p.idx, QueuedIndex: p.queued, TotalItems: len(items),
+				PlaylistID: playlistID, NowPlaying: p.nowPlayingDesc(), NextUp: p.nextUpDesc(),
+				Played: p.playedCopy(),
+				Error:  "stream output dropped — reconnecting…",
+			}
+			e.setStatus(s)
+			e.broadcast(s)
+			// Wait out the backoff, but honor a Stop while we are down.
+			select {
+			case c := <-e.cmd:
+				if c.kind == cmdStop {
+					// Mirror the main-loop stop: publish a clean position snapshot.
+					st := Status{ItemIndex: p.idx, TotalItems: len(items), PlaylistID: playlistID}
+					e.setStatus(st)
+					e.broadcast(st)
+					return false
+				}
+				// Other commands are dropped while the output is down.
+			case <-time.After(backoff):
+			}
+			ne, err := startEncoder(encCfg)
+			if err != nil {
+				log.Printf("playout: encoder reconnect attempt %d failed to start: %v", encFails, err)
+				continue
+			}
+			// startEncoder returns as soon as ffmpeg launches; if the RTMP target is
+			// still unreachable ffmpeg exits a few seconds later, which the run loop
+			// now notices immediately (Write returns errEncoderExited on the closed
+			// done channel) and comes straight back here with a grown backoff.
+			enc = ne
+			start = start.Add(time.Since(downStart)) // exclude downtime from the pacing clock
+			lastReconnect = time.Now()
+			enc.SetNowPlaying(lastText)
+			if lastArt != "\x00" {
+				enc.SetNowArt(lastArt)
+			}
+			enc.SetBannerFade(fadeWritten)
+			log.Printf("playout: encoder reconnected after %s (attempt %d)",
+				time.Since(downStart).Round(time.Millisecond), encFails)
+			return true
+		}
+	}
+
 	for {
 		// Drain any pending control commands.
 		drained := false
@@ -433,11 +543,14 @@ func (e *Engine) run(enc *encoder, items []services.FlowItem, vmix *voiceMixer, 
 			p.fill(chunk)
 			vmix.mixInto(chunk)
 			if err := enc.Write(chunk); err != nil {
-				log.Printf("playout: encoder write failed (ffmpeg exited?): %v", err)
-				s := Status{Error: "stream encoder stopped: " + err.Error()}
-				e.setStatus(s)
-				e.broadcast(s)
-				return
+				log.Printf("playout: encoder write failed (ffmpeg exited?): %v — reconnecting", err)
+				if !reconnectEncoder() {
+					return // operator asked to Stop while the output was down
+				}
+				// Fresh encoder up; the lost chunk is dropped (silence bounds any
+				// gap). Recompute the pacing target next tick against the rebased
+				// clock instead of bursting to catch up on this one.
+				break
 			}
 			if diag {
 				if g := time.Since(diagLastWr); g > diagMaxGap {
@@ -478,11 +591,14 @@ func (e *Engine) run(enc *encoder, items []services.FlowItem, vmix *voiceMixer, 
 
 		select {
 		case <-enc.Done():
-			log.Printf("playout: encoder process exited")
-			s := Status{Error: "stream encoder exited unexpectedly"}
-			e.setStatus(s)
-			e.broadcast(s)
-			return
+			// ffmpeg exited on its own (e.g. the RTMP relay dropped the
+			// connection — WSAECONNABORTED). This fires before the stdin write
+			// error would, so it is the primary reconnect trigger; don't end the
+			// show, bring a fresh encoder up and keep going.
+			log.Printf("playout: encoder process exited unexpectedly — reconnecting")
+			if !reconnectEncoder() {
+				return // operator asked to Stop while the output was down
+			}
 		case <-ticker.C:
 		}
 	}
