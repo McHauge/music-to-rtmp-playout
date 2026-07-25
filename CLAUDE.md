@@ -20,7 +20,7 @@ go build -o playout . && \
 
 go build ./...     # compile-check everything
 go vet ./...       # static checks
-go test ./...      # unit tests (mixer, ring buffer, player state machine, encoder backoff)
+go test ./...      # unit tests (playout engine internals, template funcs/fragments, config)
 gofmt -w .         # format
 
 # Dev container (app + MediaMTX relay, `dev` image target): web 8080, RTMP 1935, HLS 8888
@@ -29,7 +29,7 @@ docker compose up --build
 docker build -t playout .
 ```
 
-Test coverage is light — pure/logic-level unit tests live in `services/playout/*_test.go` (the mixer, ring buffer, player flow state machine, and encoder reconnect backoff); there is no end-to-end/integration suite. A live stream also needs an RTMP target — either the bundled MediaMTX (Docker) or any RTMP server pointed at by `RTMP_URL`.
+Tests are pure/logic-level only — nothing spawns ffmpeg or touches the DB, and there is no end-to-end/integration suite. `services/playout/*_test.go` covers the mixer and its clipping, the ring buffer, the player flow state machine and prewarm accounting, the encoder reconnect backoff, and the filtergraph helpers (`escapeFilterPath`, `bannerLayout`, `resolveVideoCodec`). `handlers/*_test.go` covers the template funcs and renders every SSE-patched fragment against the real template set; `config/` and `services/` cover env resolution and runtime summing. A live stream also needs an RTMP target — either the bundled MediaMTX (Docker) or any RTMP server pointed at by `RTMP_URL`.
 
 ## Architecture
 
