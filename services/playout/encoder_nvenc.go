@@ -5,7 +5,6 @@ import (
 	"context"
 	"log"
 	"os/exec"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -63,22 +62,4 @@ func resolveVideoCodec(pref string, nvencAvailable bool) string {
 		}
 		return "libx264"
 	}
-}
-
-// scaleRate multiplies an ffmpeg bitrate ("500k" × 4 → "2000k") for -bufsize.
-// Unparseable rates fall back unchanged, which ffmpeg treats as a 1x buffer.
-func scaleRate(rate string, factor float64) string {
-	num, suffix := rate, ""
-	if len(num) > 0 {
-		switch num[len(num)-1] {
-		case 'k', 'K', 'm', 'M':
-			suffix = string(num[len(num)-1])
-			num = num[:len(num)-1]
-		}
-	}
-	v, err := strconv.ParseFloat(num, 64)
-	if err != nil {
-		return rate
-	}
-	return strconv.FormatFloat(v*factor, 'f', -1, 64) + suffix
 }

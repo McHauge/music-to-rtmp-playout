@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -124,7 +125,7 @@ func buildVideoFilter(c encoderConfig, g bannerGeom, banner, audioInGraph bool, 
 		drawtext += "fontfile=" + escapeFilterPath(c.FontFile) + ":"
 	}
 	fontSize := g.fontSize
-	textY := itoa(g.textY)
+	textY := strconv.Itoa(g.textY)
 	if !audioInGraph {
 		// No visualization below the text — center it vertically in the bar
 		// and let it take more of the height.
@@ -204,44 +205,36 @@ func escapeFilterPath(p string) string {
 	return "'" + p + "'"
 }
 
-// findBoldFont returns a bold TTF for the banner title, falling back to the
-// regular weights (and finally "" → fontconfig default).
-func findBoldFont() string {
-	var candidates []string
-	switch runtime.GOOS {
-	case "windows":
-		candidates = []string{`C:\Windows\Fonts\arialbd.ttf`, `C:\Windows\Fonts\seguisb.ttf`}
-	default:
-		candidates = []string{
+// Font candidates for the drawtext overlay, most preferred first. Empty means
+// no candidate exists on disk and fontconfig resolves a default.
+var (
+	boldFontCandidates = map[string][]string{
+		"windows": {`C:\Windows\Fonts\arialbd.ttf`, `C:\Windows\Fonts\seguisb.ttf`},
+		"": {
 			"/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
 			"/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
 			"/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
 			"/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
 			"/usr/share/fonts/noto/NotoSans-Bold.ttf",
-		}
+		},
 	}
-	for _, c := range candidates {
-		if _, err := os.Stat(c); err == nil {
-			return c
-		}
-	}
-	return findFont()
-}
-
-// findFont returns a usable TTF for drawtext across platforms, or "" to let
-// fontconfig resolve a default.
-func findFont() string {
-	var candidates []string
-	switch runtime.GOOS {
-	case "windows":
-		candidates = []string{`C:\Windows\Fonts\arial.ttf`, `C:\Windows\Fonts\segoeui.ttf`}
-	default:
-		candidates = []string{
+	regularFontCandidates = map[string][]string{
+		"windows": {`C:\Windows\Fonts\arial.ttf`, `C:\Windows\Fonts\segoeui.ttf`},
+		"": {
 			"/usr/share/fonts/noto/NotoSans-Regular.ttf",
 			"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
 			"/usr/share/fonts/TTF/DejaVuSans.ttf",
 			"/usr/share/fonts/dejavu/DejaVuSans.ttf",
-		}
+		},
+	}
+)
+
+// firstExisting returns the first candidate for this OS that exists on disk,
+// or "" when none do.
+func firstExisting(byOS map[string][]string) string {
+	candidates, ok := byOS[runtime.GOOS]
+	if !ok {
+		candidates = byOS[""] // every non-Windows platform shares the fontconfig paths
 	}
 	for _, c := range candidates {
 		if _, err := os.Stat(c); err == nil {
@@ -251,4 +244,33 @@ func findFont() string {
 	return ""
 }
 
-func itoa(n int) string { return fmt.Sprintf("%d", n) }
+// findBoldFont returns a bold TTF for the banner title, falling back to the
+// regular weights (and finally "" → fontconfig default).
+func findBoldFont() string {
+	if f := firstExisting(boldFontCandidates); f != "" {
+		return f
+	}
+	return findFont()
+}
+
+// findFont returns a usable TTF for drawtext across platforms, or "" to let
+// fontconfig resolve a default.
+func findFont() string { return firstExisting(regularFontCandidates) }
+
+// scaleRate multiplies an ffmpeg bitrate ("500k" × 4 → "2000k") for -bufsize.
+// Unparseable rates fall back unchanged, which ffmpeg treats as a 1x buffer.
+func scaleRate(rate string, factor float64) string {
+	num, suffix := rate, ""
+	if len(num) > 0 {
+		switch num[len(num)-1] {
+		case 'k', 'K', 'm', 'M':
+			suffix = string(num[len(num)-1])
+			num = num[:len(num)-1]
+		}
+	}
+	v, err := strconv.ParseFloat(num, 64)
+	if err != nil {
+		return rate
+	}
+	return strconv.FormatFloat(v*factor, 'f', -1, 64) + suffix
+}

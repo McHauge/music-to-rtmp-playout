@@ -4,14 +4,20 @@ import (
 	"encoding/binary"
 	"os"
 	"sync"
+
+	"music-to-rtmp-playout/services"
 )
 
-// Audio constants — canonical pipeline format (must match SoundboardService).
+// Audio constants — the canonical pipeline format, 48 kHz / stereo / s16le end
+// to end. Aliased from the services package rather than restated, so the
+// soundboard's decoded PCM and the mix math cannot drift apart: any mismatch
+// would corrupt the sum and the encoder's stdin framing.
 const (
-	sampleRate     = 48000
-	channels       = 2
-	bytesPerSample = 2 // s16le
+	sampleRate     = services.SampleRate
+	channels       = services.Channels
+	bytesPerSample = services.BytesPerSample
 	frameBytes     = channels * bytesPerSample
+	bytesPerSec    = sampleRate * frameBytes // 192000
 	// 20 ms chunk: low latency for soundboard/skip responsiveness.
 	chunkFrames = sampleRate / 50
 	chunkBytes  = chunkFrames * frameBytes

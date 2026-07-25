@@ -581,14 +581,10 @@ func (p *player) nowPlayingDesc() string {
 	return services.Describe(it)
 }
 
-// nextUpDesc returns the next item's label, or "" at the end.
+// nextUpDesc returns the next item's label, or "" at the end. When holding at a
+// gate, the gate item is the current idx and the "next" is what Play will start.
 func (p *player) nextUpDesc() string {
-	ni := p.idx + 1
-	// When holding at a gate, the gate item is the current idx; the "next" is
-	// what Play will start.
-	if p.queued >= 0 {
-		ni = p.queued
-	}
+	ni := p.nextIdx()
 	if ni >= len(p.items) {
 		return "— end —"
 	}

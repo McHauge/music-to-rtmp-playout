@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -192,24 +193,20 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 
 	if c.VideoEnabled {
 		// Video input: looping still image if present, else a flat color source.
-		if c.BgImagePath != "" {
-			if _, err := os.Stat(c.BgImagePath); err == nil {
-				// Pre-scale the still to the output size ONCE. The -loop 1 input
-				// re-decodes its source every frame, so feeding the original
-				// (often a multi-megapixel photo) makes ffmpeg re-decode and
-				// re-downscale it at the video rate — ~a quarter core for a 12MP
-				// JPEG, plus swscaler's full-range "deprecated pixel format"
-				// warning. A pre-scaled rgb24 PNG is trivial to re-decode and
-				// needs no range conversion. On any failure we fall back to the
-				// original path (unchanged behavior).
-				bgInput := c.BgImagePath
-				if scaled, ok := prescaleBackground(c.FFmpegPath, c.BgImagePath, c.Width, c.Height, filepath.Dir(c.ArtLivePath)); ok {
-					bgInput = scaled
-				}
-				args = append(args, "-loop", "1", "-framerate", itoa(c.FPS), "-i", bgInput)
-			} else {
-				args = append(args, colorInput(c)...)
+		if _, err := os.Stat(c.BgImagePath); c.BgImagePath != "" && err == nil {
+			// Pre-scale the still to the output size ONCE. The -loop 1 input
+			// re-decodes its source every frame, so feeding the original
+			// (often a multi-megapixel photo) makes ffmpeg re-decode and
+			// re-downscale it at the video rate — ~a quarter core for a 12MP
+			// JPEG, plus swscaler's full-range "deprecated pixel format"
+			// warning. A pre-scaled rgb24 PNG is trivial to re-decode and
+			// needs no range conversion. On any failure we fall back to the
+			// original path (unchanged behavior).
+			bgInput := c.BgImagePath
+			if scaled, ok := prescaleBackground(c.FFmpegPath, c.BgImagePath, c.Width, c.Height, filepath.Dir(c.ArtLivePath)); ok {
+				bgInput = scaled
 			}
+			args = append(args, "-loop", "1", "-framerate", strconv.Itoa(c.FPS), "-i", bgInput)
 		} else {
 			args = append(args, colorInput(c)...)
 		}
@@ -230,13 +227,13 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 				}
 			}
 			args = append(args,
-				"-thread_queue_size", bannerTQS, "-loop", "1", "-framerate", itoa(c.FPS), "-f", "image2", "-i", c.ArtLivePath,
+				"-thread_queue_size", bannerTQS, "-loop", "1", "-framerate", strconv.Itoa(c.FPS), "-f", "image2", "-i", c.ArtLivePath,
 			)
 			if audioInGraph {
 				// Static for the whole show, but fed at the video rate: a
 				// slower rate (e.g. 1fps) makes the blend's framesync
 				// intermittently drop the mask for whole seconds.
-				args = append(args, "-thread_queue_size", bannerTQS, "-loop", "1", "-framerate", itoa(c.FPS), "-f", "image2", "-i", vizMaskPath)
+				args = append(args, "-thread_queue_size", bannerTQS, "-loop", "1", "-framerate", strconv.Itoa(c.FPS), "-f", "image2", "-i", vizMaskPath)
 				// Input 4: the visualization's own PCM feed over loopback TCP.
 				// Keeping the viz off input 0 means the broadcast audio path is
 				// stdin → AAC only — a slow video branch can starve the viz but
@@ -287,11 +284,7 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 			if c.LowLatency {
 				preset = "p4"
 			}
-			args = append(args,
-				"-c:v", "h264_nvenc", "-preset", preset,
-				"-pix_fmt", "yuv420p", "-r", itoa(c.FPS), "-g", itoa(gop),
-				"-fps_mode", "cfr",
-			)
+			args = append(args, "-c:v", "h264_nvenc", "-preset", preset)
 			if c.LowLatency {
 				args = append(args, "-tune", "ull", "-rc-lookahead", "0", "-bf", "0", "-delay", "0")
 			}
@@ -314,11 +307,7 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 			if c.LowLatency {
 				preset = "veryfast"
 			}
-			args = append(args,
-				"-c:v", "libx264", "-preset", preset,
-				"-pix_fmt", "yuv420p", "-r", itoa(c.FPS), "-g", itoa(gop),
-				"-fps_mode", "cfr",
-			)
+			args = append(args, "-c:v", "libx264", "-preset", preset)
 			// x264-params assembled once so low-latency keys apply in both the CBR
 			// and CRF (empty bitrate) paths.
 			var x264Params []string
@@ -342,6 +331,13 @@ func startEncoder(c encoderConfig) (*encoder, error) {
 				args = append(args, "-x264-params", strings.Join(x264Params, ":"))
 			}
 		}
+		// Output framing, identical for both encoders — only the codec, preset and
+		// rate control above differ. Emitted after -c:v so the codec-private
+		// -preset is parsed against an already-selected encoder.
+		args = append(args,
+			"-pix_fmt", "yuv420p", "-r", strconv.Itoa(c.FPS), "-g", strconv.Itoa(gop),
+			"-fps_mode", "cfr",
+		)
 	}
 
 	args = append(args, "-c:a", "aac", "-b:a", c.AudioBitrate, "-ar", "48000", "-ac", "2")

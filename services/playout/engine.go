@@ -9,8 +9,6 @@ import (
 	"music-to-rtmp-playout/services"
 )
 
-const bytesPerSec = sampleRate * frameBytes // 192000
-
 // ringSize is the per-song look-ahead buffer (~0.5s) that decouples decode
 // jitter from the mix tick.
 const ringSize = bytesPerSec / 2
@@ -60,6 +58,16 @@ type Status struct {
 	// Played is the set of item indices already played (visited and departed),
 	// for dimming them in the rundown. Not serialized; consumed server-side.
 	Played map[int]bool `json:"-"`
+}
+
+// NextIndex is the item the show will play next: the operator-queued one if set,
+// else the one after the current. Mirrors player.nextIdx for status consumers.
+// May be out of range at the end of the flow, which simply matches no row.
+func (s Status) NextIndex() int {
+	if s.QueuedIndex >= 0 {
+		return s.QueuedIndex
+	}
+	return s.ItemIndex + 1
 }
 
 // DiagSnapshot is the per-second real-time health of the run loop, exposed for

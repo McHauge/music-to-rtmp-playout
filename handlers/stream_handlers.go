@@ -220,19 +220,14 @@ func (app *App) rundownData(explicitID int64) map[string]any {
 	s := app.Engine.Status()
 	if s.Running {
 		items, plID := app.Engine.Show()
-		// The "up next" marker follows the operator-queued item, or defaults to
-		// the line right after the current one when nothing is explicitly queued.
-		// (Out-of-range at the end simply matches no row.)
-		next := s.QueuedIndex
-		if next < 0 {
-			next = s.ItemIndex + 1
-		}
 		return map[string]any{
-			"Running":         true,
-			"Items":           items,
-			"ElapsedSec":      s.ElapsedSec,
-			"ItemIndex":       s.ItemIndex,
-			"NextIndex":       next,
+			"Running":    true,
+			"Items":      items,
+			"ElapsedSec": s.ElapsedSec,
+			"ItemIndex":  s.ItemIndex,
+			// The "up next" marker follows the operator-queued item, or defaults
+			// to the line right after the current one.
+			"NextIndex":       s.NextIndex(),
 			"Played":          s.Played,
 			"Paused":          s.Paused,
 			"Holding":         s.Holding,
