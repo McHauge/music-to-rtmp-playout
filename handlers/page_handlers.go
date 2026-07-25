@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"music-to-rtmp-playout/config"
 	"music-to-rtmp-playout/services"
 )
 
@@ -151,7 +152,7 @@ func (app *App) SaveSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	fps, _ := strconv.Atoi(r.FormValue("video_fps"))
 	if fps <= 0 {
-		fps = 10
+		fps = config.DefaultVideoFPS
 	}
 	vw, vh := parseVideoSize(r.FormValue("video_size"), r.FormValue("video_size_custom"))
 	bgPath := r.FormValue("bg_image_path")
@@ -229,7 +230,7 @@ func parseVideoSize(sel, custom string) (int, int) {
 			return w &^ 1, h &^ 1
 		}
 	}
-	return 1280, 720
+	return config.DefaultVideoWidth, config.DefaultVideoHeight
 }
 
 // saveBackground stores an uploaded background image in the assets directory

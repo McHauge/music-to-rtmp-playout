@@ -20,14 +20,14 @@ func writeJSON(w http.ResponseWriter, v any) {
 func (app *App) DebugStats(w http.ResponseWriter, r *http.Request) {
 	st := app.Engine.Status()
 	writeJSON(w, map[string]any{
-		"running":         st.Running,
-		"paused":          st.Paused,
-		"itemIndex":       st.ItemIndex,
-		"nowPlaying":      st.NowPlaying,
-		"elapsedSec":      st.ElapsedSec,
-		"itemElapsedSec":  st.ItemElapsedSec,
-		"error":           st.Error,
-		"diag":            app.Engine.Diag(),
+		"running":        st.Running,
+		"paused":         st.Paused,
+		"itemIndex":      st.ItemIndex,
+		"nowPlaying":     st.NowPlaying,
+		"elapsedSec":     st.ElapsedSec,
+		"itemElapsedSec": st.ItemElapsedSec,
+		"error":          st.Error,
+		"diag":           app.Engine.Diag(),
 	})
 }
 

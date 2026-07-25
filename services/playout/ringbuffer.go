@@ -56,13 +56,6 @@ func (rb *RingBuffer) Available() int {
 	return rb.count
 }
 
-// Free returns the number of writable bytes.
-func (rb *RingBuffer) Free() int {
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
-	return rb.size - rb.count
-}
-
 // Closed reports whether the writer has finished, regardless of unread bytes.
 func (rb *RingBuffer) Closed() bool {
 	rb.mu.Lock()

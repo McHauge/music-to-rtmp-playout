@@ -25,12 +25,15 @@ import (
 )
 
 func main() {
+	// Set flags before anything logs (LoadConfig emits tool/warning lines) so
+	// every line carries the file:line prefix.
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+
 	if err := godotenv.Load(); err != nil {
 		log.Println("No .env file found; using environment variables")
 	}
 
 	cfg := config.LoadConfig()
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
 	// Diagnostics (opt-in via PLAYOUT_DIAG=1): expose net/http/pprof on :6060 for
 	// CPU/goroutine profiling while chasing playback-timing issues.

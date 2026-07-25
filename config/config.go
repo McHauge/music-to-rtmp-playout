@@ -8,6 +8,16 @@ import (
 	"strconv"
 )
 
+// Encoder/video defaults, shared by the env loader, the playout encoder's
+// zero-value fallbacks, and the settings-form parser so the canonical numbers
+// live in exactly one place.
+const (
+	DefaultVideoWidth   = 1280
+	DefaultVideoHeight  = 720
+	DefaultVideoFPS     = 10
+	DefaultAudioBitrate = "160k"
+)
+
 // Config holds all application configuration, loaded from environment variables
 // with sensible defaults for a single-container self-hosted deployment.
 type Config struct {
@@ -81,11 +91,11 @@ func LoadConfig() *Config {
 		YtDlpPath:   resolveTool("YTDLP_PATH", "yt-dlp", binDir),
 
 		RTMPURL:      getEnv("RTMP_URL", "rtmp://localhost:1935/live/show"),
-		VideoWidth:   getEnvInt("VIDEO_WIDTH", 1280),
-		VideoHeight:  getEnvInt("VIDEO_HEIGHT", 720),
-		VideoFPS:     getEnvInt("VIDEO_FPS", 10),
+		VideoWidth:   getEnvInt("VIDEO_WIDTH", DefaultVideoWidth),
+		VideoHeight:  getEnvInt("VIDEO_HEIGHT", DefaultVideoHeight),
+		VideoFPS:     getEnvInt("VIDEO_FPS", DefaultVideoFPS),
 		VideoBitrate: getEnv("VIDEO_BITRATE", "500k"),
-		AudioBitrate: getEnv("AUDIO_BITRATE", "160k"),
+		AudioBitrate: getEnv("AUDIO_BITRATE", DefaultAudioBitrate),
 		BgImagePath:  getEnv("BG_IMAGE_PATH", "./assets/bg.png"),
 
 		Theme: getEnv("THEME", "teal"),

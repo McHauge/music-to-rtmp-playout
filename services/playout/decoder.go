@@ -1,6 +1,7 @@
 package playout
 
 import (
+	"fmt"
 	"io"
 	"os/exec"
 	"time"
@@ -25,10 +26,10 @@ func startDecoder(ffmpegPath, filePath string, ringSize int) (*decoder, error) {
 		"pipe:1")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decoder stdout pipe: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decoder ffmpeg start: %w", err)
 	}
 
 	d := &decoder{cmd: cmd, ring: NewRingBuffer(ringSize), done: make(chan struct{}), abort: make(chan struct{})}
